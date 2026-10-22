@@ -6,7 +6,7 @@ apachelounge.com and php.net
   Note: in ContaCam the mapache.exe file is the renamed httpd.exe file 
         from the apache distribution (that's so for historical reasons).
 
-- PHP 8.4.26 VS17 x86 with OpenSSL 3.0.22
+- PHP 8.4.27 VS17 x86 with OpenSSL 3.0.22
   https://windows.php.net/download/
   Attention: we must download the thread safe PHP version!
   PHP 8.3 dropper Windows 7 support:
