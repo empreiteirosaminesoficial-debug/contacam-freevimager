@@ -1,6 +1,6 @@
 CONTACAM HISTORY
 
-9.9.28 (Month XXth 2026)
+9.9.28 (October 22nd 2026)
 
 - IMPORTANT PHP SECURITY FIX: updated to PHP 8.4.27 and Apache 2.4.69 
   to fix CVE-2026-109618 and CVE-2026-109619 collectively named PHP2Shell 
