@@ -37,6 +37,13 @@ public:
 						int& nOutGetFrameVideoPort,
 						CString& sOutHttpGetFrameLocation,
 						int& nOutDeviceTypeMode);
+	static BOOL SplitStreamUrl(const CString& sInUrl,
+							BOOL& bOutRtsp,
+							CString& sOutUser,
+							CString& sOutPass,
+							CString& sOutHost,
+							int& nOutPort,
+							CString& sOutLocation);
 	static void MakeUrl(const CString& sInGetFrameVideoHost,
 						int nInGetFrameVideoPort,
 						const CString& sInGetFrameLocation,
@@ -82,6 +89,8 @@ protected:
 	afx_msg void OnCheckPreferTcpforRtsp();
 	afx_msg void OnCheckUdpMulticastforRtsp();
 	afx_msg void OnButtonHelp();
+	afx_msg void OnButtonFillFromUrl();
+	afx_msg void OnButtonScanPorts();
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 };

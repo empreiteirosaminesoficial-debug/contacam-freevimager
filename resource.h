@@ -3010,6 +3010,10 @@
 #define IDC_BUTTON_HELP                 2593
 #define IDC_SYSLINK_HTTPD_CONF_EDITABLE 2594
 #define IDC_STATIC_DETECTION_MAX_MAXFRAMES 2595
+#define IDC_EDIT_STREAM_URL             2596
+#define IDC_BUTTON_FILL_FROM_URL        2597
+#define IDC_BUTTON_SCAN_PORTS           2598
+#define IDC_STATIC_AUTOFILL             2599
 #define ID_EDIT_ROTATE_FLIP             32778
 #define ID_FILE_SELECTTWAINSOURCE       32779
 #define ID_FILE_ACQUIRE                 32780
@@ -3251,7 +3255,7 @@
 #define _APS_3D_CONTROLS                     1
 #define _APS_NEXT_RESOURCE_VALUE        1503
 #define _APS_NEXT_COMMAND_VALUE         33557
-#define _APS_NEXT_CONTROL_VALUE         2596
+#define _APS_NEXT_CONTROL_VALUE         2600
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
