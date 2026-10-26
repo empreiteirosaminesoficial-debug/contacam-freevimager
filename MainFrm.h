@@ -272,6 +272,8 @@ protected:
 #ifdef VIDEODEVICEDOC
 	afx_msg void OnInitMenuPopup(CMenu* pPopupMenu, UINT nIndex, BOOL bSysMenu);
 	afx_msg LONG OnAutorunVideoDevices(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnRecSpeedClick();
 #else
 	afx_msg void OnXCoordinatesDoubleClick();

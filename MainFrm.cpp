@@ -12,6 +12,7 @@
 #include "BatchProcDlg.h"
 #include "CPUSpeed.h"
 #include "PostDelayedMessage.h"
+#include "CameraScanDlg.h"
 #include "Dib.h"
 #include "Quantizer.h"
 #include "Tiff2Pdf.h"
@@ -74,6 +75,8 @@ BEGIN_MESSAGE_MAP(CMainFrame, CMDIFrameWnd)
 #ifdef VIDEODEVICEDOC
 	ON_WM_INITMENUPOPUP()
 	ON_MESSAGE(WM_AUTORUN_VIDEODEVICES, OnAutorunVideoDevices)
+	ON_MESSAGE(WM_THREADSAFE_AUTOSCAN_START, OnThreadSafeAutoScanStart)
+	ON_MESSAGE(WM_THREADSAFE_AUTOSCAN_DONE, OnThreadSafeAutoScanDone)
 	ON_COMMAND(ID_INDICATOR_REC_SPEED, OnRecSpeedClick)
 #else
 	ON_COMMAND(ID_INDICATOR_XCOORDINATE, OnXCoordinatesDoubleClick)
@@ -960,6 +963,49 @@ BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 }
 
 #ifdef VIDEODEVICEDOC
+
+LONG CMainFrame::OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam)
+{
+	// A new network camera is connected: look for other cameras in the background
+	CAutoScanCtx* pCtx = (CAutoScanCtx*)lparam;
+	if (pCtx)
+	{
+		if (::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1))
+		{
+			pCtx->m_hNotify = GetSafeHwnd();
+			StartAutoScan(pCtx); // the ownership passes to the scan thread
+		}
+		else
+			delete pCtx;
+	}
+	return 0;
+}
+
+LONG CMainFrame::OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam)
+{
+	CAutoScanCtx* pCtx = (CAutoScanCtx*)lparam;
+	if (pCtx)
+	{
+		if (pCtx->m_Found.GetSize() > 0)
+		{
+			// A modal dialog is open (for example the Camera Basic Settings): try again in 2 seconds
+			if (!IsWindowEnabled() &&
+				CPostDelayedMessageThread::PostDelayedMessage(GetSafeHwnd(), WM_THREADSAFE_AUTOSCAN_DONE, 2000, 0, lparam))
+				return 0;
+
+			CCameraScanDlg Dlg(this);
+			Dlg.m_sUser = pCtx->m_sUser;
+			Dlg.m_sPass = pCtx->m_sPass;
+			Dlg.m_sDvrHost = pCtx->m_sHost;
+			Dlg.m_nDvrPort = (pCtx->m_nPort > 0) ? pCtx->m_nPort : RTSP_DEFAULT_PORT;
+			Dlg.m_sExcludeHost = pCtx->m_sHost;
+			Dlg.m_Found.Append(pCtx->m_Found);
+			Dlg.DoModal();
+		}
+		delete pCtx;
+	}
+	return 0;
+}
 
 LONG CMainFrame::OnAutorunVideoDevices(WPARAM wparam, LPARAM lparam)
 {

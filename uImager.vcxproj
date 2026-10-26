@@ -468,6 +468,7 @@
     </ClCompile>
     <ClCompile Include="CameraAdvancedSettingsDlg.cpp" />
     <ClCompile Include="CameraBasicSettingsDlg.cpp" />
+    <ClCompile Include="CameraScanDlg.cpp" />
     <ClCompile Include="cdxCDynamicDialog.cpp">
       <AdditionalIncludeDirectories Condition="'$(Configuration)|$(Platform)'=='ContaCam|Win32'">%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions Condition="'$(Configuration)|$(Platform)'=='ContaCam|Win32'">%(PreprocessorDefinitions)</PreprocessorDefinitions>
@@ -1238,6 +1239,7 @@
     <ClInclude Include="BrowseDlg.h" />
     <ClInclude Include="CameraAdvancedSettingsDlg.h" />
     <ClInclude Include="CameraBasicSettingsDlg.h" />
+    <ClInclude Include="CameraScanDlg.h" />
     <ClInclude Include="cdxCDynamicDialog.h" />
     <ClInclude Include="cdxCDynamicWnd.h" />
     <ClInclude Include="cdxCDynamicWndEx.h" />

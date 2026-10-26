@@ -16,6 +16,7 @@
 #include "MotionDetHelpers.h"
 #include "Base64.h"
 #include "CMD5.h"
+#include "CameraScanDlg.h"
 #include "CSHA256.h"
 #include "Psapi.h"
 #include "NoVistaFileDlg.h"
@@ -5005,6 +5006,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 		
 		m_HttpGetFrameLocations.Add(_T("/video/mjpg.cgi"));					// D-Link, Sparklan, TrendNet
 		
+		m_HttpGetFrameLocations.Add(_T("/stream"));							// ESP32-CAM (Espressif CameraWebServer, stream port 81)
+
 		m_HttpGetFrameLocations.Add(_T("/mjpegStreamer.cgi"));				// Compro, PROCCTV, Zyxel
 
 		m_HttpGetFrameLocations.Add(_T("/cgi-bin/video.cgi?msubmenu=mjpg"));// Samsung
@@ -5112,6 +5115,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 		m_HttpGetFrameLocations.Add(_T("/ISAPI/Streaming/channels/1/picture")); // Newer Hikvision
 
 		m_HttpGetFrameLocations.Add(_T("/Streaming/channels/1/picture"));	// Hikvision, ABUS
+
+		m_HttpGetFrameLocations.Add(_T("/capture"));							// ESP32-CAM (esp32-cam-webserver, port 80)
 
 		m_HttpGetFrameLocations.Add(_T("/capture1.jpg"));					// Active WebCam Video Surveillance Software
 
@@ -7679,6 +7684,19 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 				::PostMessage(	GetView()->GetSafeHwnd(),
 								WM_THREADSAFE_CAPTURECAMERABASICSETTINGS,
 								0, 0);
+
+				// First successful connection of a new network camera: search the network for other
+				// cameras and DVR channels (the main frame checks the user setting and starts the scan)
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess)
+				{
+					CAutoScanCtx* pAutoScanCtx = new CAutoScanCtx;
+					pAutoScanCtx->m_sHost = m_sGetFrameVideoHost;
+					pAutoScanCtx->m_nPort = (m_nNetworkDeviceTypeMode >= CVideoDeviceDoc::URL_RTSP) ? (int)m_nGetFrameVideoPort : 0;
+					pAutoScanCtx->m_sUser = m_sHttpGetFrameUsername;
+					pAutoScanCtx->m_sPass = m_sHttpGetFramePassword;
+					if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOSCAN_START, 0, (LPARAM)pAutoScanCtx))
+						delete pAutoScanCtx;
+				}
 			}
 			::LogLine(_T("%s %s (%dx%d, %s)"), ML_STRING(1764, "Starting"), GetAssignedDeviceName(), m_DocRect.Width(), m_DocRect.Height(), GetDeviceFormat());
 		}

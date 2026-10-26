@@ -4,6 +4,7 @@
 #include "stdafx.h"
 #include "uimager.h"
 #include "HostPortDlg.h"
+#include "CameraScanDlg.h"
 #include "VideoDeviceDoc.h"
 #include "ToolBarChildFrm.h"
 #include "SortableStringArray.h" // for the CompareNatural() function
@@ -51,6 +52,8 @@ BEGIN_MESSAGE_MAP(CHostPortDlg, CDialog)
 	ON_BN_CLICKED(IDC_BUTTON_HELP, OnButtonHelp)
 	ON_BN_CLICKED(IDC_BUTTON_FILL_FROM_URL, OnButtonFillFromUrl)
 	ON_BN_CLICKED(IDC_BUTTON_SCAN_PORTS, OnButtonScanPorts)
+	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_LAN, OnButtonOpenScanLan)
+	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_DVR, OnButtonOpenScanDvr)
 	//}}AFX_MSG_MAP
 END_MESSAGE_MAP()
 
@@ -304,6 +307,9 @@ BOOL CHostPortDlg::OnInitDialog()
 	CUImagerApp::RichEditCtrlAppendText(pRichEditHttpPorts, _T(", 88"), ::GetSysColor(COLOR_WINDOWTEXT));
 
 	// Update Controls
+	// Search other cameras after the first successful connection of a new camera
+	((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->SetCheck(::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1) ? 1 : 0);
+
 	EnableDisableCtrls();
 	LoadSettings();
 
@@ -721,6 +727,7 @@ void CHostPortDlg::OnOK()
 	pApp->WriteProfileString(sSection, _T("HostHistory0"), m_sHost);
 	pApp->WriteProfileInt(sSection, _T("PortHistory0"), m_nPort);
 	pApp->WriteProfileInt(sSection, _T("DeviceTypeModeHistory0"), m_nDeviceTypeMode);
+	pApp->WriteProfileInt(sSection, _T("AutoScanOtherCameras"), ((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->GetCheck() ? 1 : 0);
 
 	// Save Username, Password, PreferTcpforRtsp and UdpMulticastforRtsp flags
 	// for the device given by m_sHost, m_nPort, m_nDeviceTypeMode
@@ -1060,7 +1067,7 @@ void CHostPortDlg::OnButtonFillFromUrl()
 	GetDlgItem(IDC_EDIT_STREAM_URL)->SetWindowText(_T(""));
 }
 
-static void SetSockAddrPort(SOCKADDR_STORAGE& addr, int nPort)
+void SetSockAddrPort(SOCKADDR_STORAGE& addr, int nPort)
 {
 	// sin_port and sin6_port are at the same offset
 	((SOCKADDR_IN*)&addr)->sin_port = htons((u_short)nPort);
@@ -1068,7 +1075,7 @@ static void SetSockAddrPort(SOCKADDR_STORAGE& addr, int nPort)
 
 // Opens a tcp connection and checks the answer
 // Returns 1 for RTSP, 2 for HTTP and 0 if the protocol is not recognized
-static int ProbeTcpPort(const SOCKADDR_STORAGE& addr, int nAddrLen, int nPort, const CStringA& sHostForUrl)
+int ProbeTcpPort(const SOCKADDR_STORAGE& addr, int nAddrLen, int nPort, const CStringA& sHostForUrl)
 {
 	for (int nTry = 0; nTry < 2; nTry++)
 	{
@@ -1123,8 +1130,9 @@ void CHostPortDlg::OnButtonScanPorts()
 		return OnError();
 
 	// Common RTSP, HTTP and ONVIF ports, the order is the selection priority
+	// (81 = ESP32-CAM stream, 5000 = ONVIF of Yoosee cameras)
 	static const int nPortsToScan[] = {	554, 8554, 10554, 5543, 5544, 555, 7070,
-										88, 80, 8080, 8000, 8081, 8899, 2020};
+										88, 80, 81, 8080, 8000, 8081, 8899, 2020, 5000};
 	const int nPortsCount = sizeof(nPortsToScan) / sizeof(nPortsToScan[0]);
 
 	CWaitCursor WaitCursor;
@@ -1272,6 +1280,75 @@ void CHostPortDlg::OnButtonScanPorts()
 		sMsg += _T(" RTSP port ") + sPortText + _T(" selected.");
 	}
 	::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, sMsg, 0);
+}
+
+BOOL CHostPortDlg::IsRunningQuiet(const CString& sHost, int nPort, int nDeviceTypeMode)
+{
+	CString sDevicePathName = MakeDevicePathName(sHost, nPort, nDeviceTypeMode);
+	CUImagerMultiDocTemplate* pVideoDeviceDocTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	POSITION posVideoDeviceDoc = pVideoDeviceDocTemplate->GetFirstDocPosition();
+	while (posVideoDeviceDoc)
+	{
+		CVideoDeviceDoc* pVideoDeviceDoc = (CVideoDeviceDoc*)pVideoDeviceDocTemplate->GetNextDoc(posVideoDeviceDoc);
+		if (pVideoDeviceDoc && !pVideoDeviceDoc->m_pDxCapture &&
+			pVideoDeviceDoc->GetDevicePathName() == sDevicePathName)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass)
+{
+	// This object only carries the values to CVideoDeviceDoc::OpenNetVideoDevice(), it is never shown.
+	// When the stream path is known the full url is used as host, ParseUrl() splits it again
+	CHostPortDlg Dlg;
+	Dlg.m_sHost = sUrl.IsEmpty() ? sHost : sUrl;
+	Dlg.m_nPort = nPort;
+	Dlg.m_nDeviceTypeMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+	if (IsRunningQuiet(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode))
+		return FALSE;
+
+	// Save the login of this camera, the device loads it from the same place
+	CUImagerApp* pApp = (CUImagerApp*)::AfxGetApp();
+	CString sDevicePathName = MakeDevicePathName(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode);
+	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFrameUsernameExportable"), sUser);
+	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFramePasswordExportable"), sPass);
+
+	// Open
+	CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pApp->GetVideoDeviceDocTemplate()->OpenDocumentFile(NULL);
+	if (!pDoc)
+		return FALSE;
+	pDoc->OpenNetVideoDevice(&Dlg);
+	return TRUE;
+}
+
+void CHostPortDlg::OnButtonOpenScanLan()
+{
+	CCameraScanDlg Dlg(this);
+	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(Dlg.m_sUser);
+	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(Dlg.m_sPass);
+	Dlg.m_bAutoScanLan = TRUE;
+	if (Dlg.DoModal() == IDOK && Dlg.m_nOpened > 0)
+		EndDialog(IDCANCEL); // the scan dialog has already opened the cameras
+}
+
+void CHostPortDlg::OnButtonOpenScanDvr()
+{
+	// DVR host and port (works also when an url is in the host field)
+	CString sHostToScan;
+	CString sLocation;
+	int nUrlPort;
+	int nUrlMode;
+	ParseUrl(m_sHost, m_nPort, m_nDeviceTypeMode, sHostToScan, nUrlPort, sLocation, nUrlMode);
+
+	CCameraScanDlg Dlg(this);
+	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(Dlg.m_sUser);
+	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(Dlg.m_sPass);
+	Dlg.m_sDvrHost = sHostToScan;
+	Dlg.m_nDvrPort = (nUrlPort > 0 && nUrlPort <= 65535) ? nUrlPort : RTSP_DEFAULT_PORT;
+	Dlg.m_bAutoScanDvr = !sHostToScan.IsEmpty();
+	if (Dlg.DoModal() == IDOK && Dlg.m_nOpened > 0)
+		EndDialog(IDCANCEL); // the scan dialog has already opened the cameras
 }
 
 #endif

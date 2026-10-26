@@ -115,6 +115,7 @@
 #define IDD_SETTINGS_VIDEODEVICEDOC     300
 #define IDI_EMF                         300
 #define IDD_CAMERABASICSETTINGS         304
+#define IDD_CAMERASCAN                  1503
 #define IDD_RENAME                      305
 #define IDD_DELETE_CAM_FOLDERS          306
 #define IDD_PLATERECOGNIZER             307
@@ -3014,6 +3015,18 @@
 #define IDC_BUTTON_FILL_FROM_URL        2597
 #define IDC_BUTTON_SCAN_PORTS           2598
 #define IDC_STATIC_AUTOFILL             2599
+#define IDC_LIST_FOUND_CAMERAS          2600
+#define IDC_STATIC_SCAN_STATUS          2601
+#define IDC_BUTTON_SCAN_LAN             2602
+#define IDC_BUTTON_SCAN_DVR             2603
+#define IDC_BUTTON_SCAN_STOP            2604
+#define IDC_EDIT_SCAN_DVR               2605
+#define IDC_BUTTON_OPEN_SCAN_LAN        2606
+#define IDC_BUTTON_OPEN_SCAN_DVR        2607
+#define IDC_CHECK_AUTOSCAN              2608
+#define IDC_STATIC_SCAN_USER            2609
+#define IDC_STATIC_SCAN_PASS            2610
+#define IDC_STATIC_SCAN_DVR             2611
 #define ID_EDIT_ROTATE_FLIP             32778
 #define ID_FILE_SELECTTWAINSOURCE       32779
 #define ID_FILE_ACQUIRE                 32780
@@ -3253,9 +3266,9 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_3D_CONTROLS                     1
-#define _APS_NEXT_RESOURCE_VALUE        1503
+#define _APS_NEXT_RESOURCE_VALUE        1504
 #define _APS_NEXT_COMMAND_VALUE         33557
-#define _APS_NEXT_CONTROL_VALUE         2600
+#define _APS_NEXT_CONTROL_VALUE         2612
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif
