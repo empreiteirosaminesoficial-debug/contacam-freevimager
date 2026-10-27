@@ -4061,6 +4061,13 @@ CString CVideoDeviceDoc::GetDeviceName()
 	{
 		sDevice.Format(_T("%s:%d"), m_sGetFrameVideoHost, m_nGetFrameVideoPort);
 		sDevice.Replace(_T("%"), _T(":interface")); // for IP6 link-local addresses
+
+		// Several cameras / DVR channels of the same IP:PORT opened with a full rtsp url are told
+		// apart by the stream path, otherwise they all get the same name and the same folder
+		if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP &&
+			m_HttpGetFrameLocations.GetSize() > 0 &&
+			m_HttpGetFrameLocations[0].GetLength() > 1)
+			sDevice += m_HttpGetFrameLocations[0];
 	}
 
 	// Registry key cannot begin with a backslash and should
@@ -7712,7 +7719,9 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 
 				// First successful connection of a new network camera: search the network for other
 				// cameras and DVR channels (the main frame checks the user setting and starts the scan)
-				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess)
+				// (not for streams with a path: DVR channels opened together would each start a new scan)
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess &&
+					!(m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP && m_HttpGetFrameLocations.GetSize() > 0 && m_HttpGetFrameLocations[0].GetLength() > 1))
 				{
 					CAutoScanCtx* pAutoScanCtx = new CAutoScanCtx;
 					pAutoScanCtx->m_sHost = m_sGetFrameVideoHost;
