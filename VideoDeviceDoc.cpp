@@ -2656,6 +2656,8 @@ int CVideoDeviceDoc::CRtspThread::Work()
 
 		// Options var
 		AVDictionary* opts = NULL;
+		AVDictionary* optsFallback = NULL; // copy of opts used to retry when the camera refuses TCP
+		BOOL bTcpFallback = FALSE;
 
 		// If set, and if TCP is available as RTSP transport, then TCP will be tried first instead of UDP
 		if (m_pDoc->m_bPreferTcpforRtsp)
@@ -2693,7 +2695,29 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		// Open rtsp
 		CStringA sAnsiURL(m_sURL);
 		pFormatCtx->probesize = 10000000; // the default of 5000000 bytes is too low
-		if ((ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts)) < 0)
+		bTcpFallback = (m_pDoc->m_bPreferTcpforRtsp && !m_pDoc->m_bUdpMulticastforRtsp);
+		if (bTcpFallback)
+			av_dict_copy(&optsFallback, opts, 0);
+		ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		if (ret < 0 && bTcpFallback && !DoExit())
+		{
+			// Some cameras do not support RTSP over TCP and answer with 400 Bad Request:
+			// retry with the default transport (UDP) instead of failing
+			::LogLine(_T("%s, RTSP over TCP refused, retrying with UDP"), m_pDoc->GetAssignedDeviceName());
+			av_dict_free(&opts);
+			opts = optsFallback;
+			optsFallback = NULL;
+			av_dict_set(&opts, "rtsp_flags", NULL, 0); // remove prefer_tcp
+			pFormatCtx = avformat_alloc_context();
+			if (!pFormatCtx)
+			{
+				ret = AVERROR(ENOMEM);
+				goto free;
+			}
+			pFormatCtx->probesize = 10000000;
+			ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		}
+		if (ret < 0)
 			goto free;
 
 		// Search video and audio streams for which we have decoders
@@ -3174,6 +3198,7 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		if (pFormatCtx)
 			avformat_close_input(&pFormatCtx);
 		av_dict_free(&opts);
+		av_dict_free(&optsFallback);
 		if (pAudioPlay)
 			delete pAudioPlay;
 		if (pAudioTools)

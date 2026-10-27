@@ -1305,6 +1305,32 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 	Dlg.m_sHost = sUrl.IsEmpty() ? sHost : sUrl;
 	Dlg.m_nPort = nPort;
 	Dlg.m_nDeviceTypeMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+	if (!sUrl.IsEmpty())
+	{
+		// Known generic paths are mapped to the matching Camera Maker and Protocol entry
+		// (/onvif1 must not be registered as /11), unknown paths stay as full url in the host field
+		BOOL bRtsp = FALSE;
+		CString sSplitUser, sSplitPass, sSplitHost, sSplitPath;
+		int nSplitPort = 0;
+		if (SplitStreamUrl(sUrl, bRtsp, sSplitUser, sSplitPass, sSplitHost, nSplitPort, sSplitPath) && bRtsp && !sSplitHost.IsEmpty())
+		{
+			sSplitPath.MakeLower();
+			int nKnownMode = -1;
+			if (sSplitPath == _T("/11"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+			else if (sSplitPath == _T("/onvif1"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_2_RTSP;
+			else if (sSplitPath == _T("/live/ch0"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_3_RTSP;
+			if (nKnownMode >= 0)
+			{
+				Dlg.m_sHost = sSplitHost;
+				Dlg.m_nDeviceTypeMode = nKnownMode;
+				if (nSplitPort > 0 && nSplitPort <= 65535)
+					Dlg.m_nPort = nSplitPort;
+			}
+		}
+	}
 	if (IsRunningQuiet(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode))
 		return FALSE;
 
@@ -1313,6 +1339,9 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 	CString sDevicePathName = MakeDevicePathName(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode);
 	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFrameUsernameExportable"), sUser);
 	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFramePasswordExportable"), sPass);
+
+	// RTSP Transport is left at the default (both options unchecked = UDP). Some cameras, for example
+	// the Yoosee/Gwell ones, only connect this way. An already saved user choice is not overwritten
 
 	// Open
 	CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pApp->GetVideoDeviceDocTemplate()->OpenDocumentFile(NULL);
