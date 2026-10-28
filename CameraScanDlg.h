@@ -20,12 +20,14 @@
 class CFoundCamera
 {
 public:
-	CFoundCamera() { m_nPort = 0; };
+	CFoundCamera() { m_nPort = 0; m_nMode = -1; };
 	CString m_sHost;	// IP or hostname
 	int m_nPort;		// RTSP port
 	CString m_sUrl;		// rtsp://host[:port]/path without credentials, empty if the stream path is unknown
 	CString m_sType;	// "RTSP", "ONVIF" or "DVR ch 3"
 	CString m_sInfo;	// name / hardware reported by ONVIF or additional notes
+	int m_nMode;		// CVideoDeviceDoc::NetworkDeviceTypeMode of the camera maker list, -1 if unknown
+	CString m_sMaker;	// name of the entry of the camera maker list
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -38,6 +40,9 @@ public:
 	virtual void OnFound(const CFoundCamera& cam) = 0;
 	virtual void OnStatus(const CString& sStatus) = 0;
 	virtual BOOL IsCancelled() = 0;
+	// Pause after each batch of connections, used by the background scan so that it
+	// does not disturb the streams of the cameras that are already open
+	virtual DWORD GetBatchDelayMs() { return 0; };
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -46,20 +51,28 @@ public:
 class CCameraScanner
 {
 public:
-	// Searches all local IPv4 subnets (max 1022 hosts each), the hosts in
+	// Sweeps all local IPv4 subnets (max 1022 hosts each) and, if sStartHost is an
+	// IPv4 address, also its /24 subnet starting from that address. The hosts in
 	// saExcludeHosts are not reported. If sUser/sPass are given they are used
-	// to find the RTSP stream path of each camera
+	// to find the RTSP stream path of each camera. All the RTSP ports (554, 10554, ...)
+	// that are open on a host are tried
 	static void ScanLan(CScanSink& sink,
 						const CStringArray& saExcludeHosts,
 						const CString& sUser,
-						const CString& sPass);
+						const CString& sPass,
+						const CString& sStartHost = _T(""));
 
-	// Enumerates the channels (up to 32) of a DVR/NVR
+	// Enumerates the channels (up to 32) of a DVR/NVR. A standalone camera answers
+	// every channel: it is reported once (only if bReportSingleCamera is set)
 	static void ScanDvr(CScanSink& sink,
 						const CString& sHost,
 						int nPort,
 						const CString& sUser,
-						const CString& sPass);
+						const CString& sPass,
+						BOOL bReportSingleCamera = TRUE);
+
+	// Entry of the camera maker list that uses the given RTSP path, -1 if there is none
+	static int ModeFromRtspPath(const CString& sPath, CString* psMakerName = NULL);
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -75,6 +88,7 @@ public:
 	virtual void OnFound(const CFoundCamera& cam) { m_Found.Add(cam); };
 	virtual void OnStatus(const CString& sStatus) { ; };
 	virtual BOOL IsCancelled() { return m_bCancel; };
+	virtual DWORD GetBatchDelayMs() { return 150; };
 
 	CString m_sHost;	// host of the camera that has just been connected
 	int m_nPort;
@@ -116,7 +130,7 @@ public:
 
 // Implementation
 protected:
-	void StartScan(BOOL bDvr);
+	void StartScan(BOOL bLan, BOOL bDvr);
 	void StopScan();
 	void AddItem(const CFoundCamera& cam);
 	void EnableDisableCtrls();

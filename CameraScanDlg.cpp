@@ -28,15 +28,16 @@ static char THIS_FILE[] = __FILE__;
 #define WM_SCAN_STATUS		(WM_USER + 771)	// lParam = CString* (the receiver deletes it)
 #define WM_SCAN_DONE		(WM_USER + 772)
 
-// Ports scanned on each host of the local network (RTSP only, the ONVIF
-// discovery finds the cameras that are not listening on one of these)
-// The first LAN_RTSP_PORTS_COUNT ports are RTSP ports, the last two are the HTTP and the
-// stream port of the ESP32-CAM (esp32-cam-webserver). The open ports are stored in a BYTE mask
-static const int LAN_PORTS[] = { 554, 8554, 10554, 5543, 555, 7070, 80, 81 };
+// Ports scanned on each host of the network. The first LAN_RTSP_PORTS_COUNT ports are
+// RTSP ports (if a camera does not answer on 554 the next ones are tried), the last two
+// are the HTTP and the stream port of the ESP32-CAM (esp32-cam-webserver).
+// The open ports are stored in a DWORD mask (the ONVIF discovery finds the cameras
+// that are not listening on one of these)
+static const int LAN_PORTS[] = { 554, 8554, 10554, 5543, 5544, 555, 7070, 88, 8000, 8899, 80, 81 };
 static const int LAN_PORTS_COUNT = sizeof(LAN_PORTS) / sizeof(LAN_PORTS[0]);
-#define LAN_RTSP_PORTS_COUNT	6
-#define LAN_PORT_IDX_HTTP		6
-#define LAN_PORT_IDX_STREAM		7
+#define LAN_RTSP_PORTS_COUNT	10
+#define LAN_PORT_IDX_HTTP		10
+#define LAN_PORT_IDX_STREAM		11
 
 // Stream paths that are tried to find out the RTSP url of a camera
 static const LPCTSTR RTSP_PATHS[] =
@@ -83,6 +84,49 @@ static const CDvrTemplate DVR_TEMPLATES[] =
 };
 static const int DVR_TEMPLATES_COUNT = sizeof(DVR_TEMPLATES) / sizeof(DVR_TEMPLATES[0]);
 #define DVR_MAX_CHANNELS	32
+
+// Camera maker list entries (CHostPortDlg) that are selected from the RTSP path
+struct CMakerPath
+{
+	LPCTSTR m_sPath;
+	int m_nMode;
+	LPCTSTR m_sName;
+};
+static const CMakerPath MAKER_PATHS[] =
+{
+	{ _T("/11"),									CVideoDeviceDoc::GENERIC_1_RTSP,		_T("Generic /11") },
+	{ _T("/onvif1"),								CVideoDeviceDoc::GENERIC_2_RTSP,		_T("Generic /onvif1") },
+	{ _T("/live/ch0"),							CVideoDeviceDoc::GENERIC_3_RTSP,		_T("Generic /live/ch0") },
+	{ _T("/1"),									CVideoDeviceDoc::GENERIC_7_RTSP,		_T("Generic /1 (Yoosee/Gwell)") },
+	{ _T("/onvif2"),								CVideoDeviceDoc::GENERIC_8_RTSP,		_T("Generic /onvif2 (Yoosee/Gwell)") },
+	{ _T("/Streaming/Channels/101"),				CVideoDeviceDoc::HIKVISION_RTSP,		_T("Hikvision") },
+	{ _T("/cam/realmonitor?channel=1&subtype=0"),	CVideoDeviceDoc::AMCREST_RTSP,			_T("Amcrest / Dahua / Lorex") },
+	{ _T("/h264Preview_01_main"),				CVideoDeviceDoc::REOLINK_H264_RTSP,		_T("Reolink") },
+	{ _T("/live/ch00_0"),						CVideoDeviceDoc::UBIQUITI_RTSP,			_T("Ubiquiti") },
+	{ _T("/stream1"),								CVideoDeviceDoc::TPLINK_TAPO_RTSP,		_T("TP-Link Tapo") },
+	{ _T("/videoMain"),							CVideoDeviceDoc::FOSCAM_RTSP,			_T("Foscam") },
+	{ _T("/h264"),								CVideoDeviceDoc::ACTI_RTSP,				_T("ACTi / Bosch") },
+	{ _T("/live1.sdp"),							CVideoDeviceDoc::DLINK_LIVE1_RTSP,		_T("D-Link") },
+	{ _T("/profile1/media.smp"),				CVideoDeviceDoc::SAMSUNG_PROFILE1_RTSP,	_T("Samsung") },
+	{ _T("/MediaInput/h264"),					CVideoDeviceDoc::PANASONIC_RTSP,		_T("Panasonic") },
+	{ _T("/axis-media/media.amp"),				CVideoDeviceDoc::AXIS_RTSP,				_T("Axis") },
+	{ _T("/live"),								CVideoDeviceDoc::DAHUA_RTSP,			_T("Dahua / Wyze") }
+};
+static const int MAKER_PATHS_COUNT = sizeof(MAKER_PATHS) / sizeof(MAKER_PATHS[0]);
+
+int CCameraScanner::ModeFromRtspPath(const CString& sPath, CString* psMakerName)
+{
+	for (int i = 0; i < MAKER_PATHS_COUNT; i++)
+	{
+		if (sPath.CompareNoCase(MAKER_PATHS[i].m_sPath) == 0)
+		{
+			if (psMakerName)
+				*psMakerName = MAKER_PATHS[i].m_sName;
+			return MAKER_PATHS[i].m_nMode;
+		}
+	}
+	return -1;
+}
 
 /////////////////////////////////////////////////////////////////////////////
 // Helpers
@@ -324,16 +368,49 @@ static int RtspDescribe(const SOCKADDR_STORAGE& addr,
 	return RtspRequest(addr, nAddrLen, nPort, BuildDescribe(sUri, 2, sAuth), sResponse);
 }
 
-// Returns 1 if a stream path has been found, 0 if not found, -1 if a login is required or wrong
+// Value of the Server header answered to an RTSP OPTIONS request (brand hint), empty if none
+static CString RtspServerHeader(const SOCKADDR_STORAGE& addr, int nAddrLen, const CString& sHost, int nPort)
+{
+	CString sUrl;
+	int nDummyPort;
+	int nDummyMode;
+	CHostPortDlg::MakeUrl(sHost, nPort, _T(""), CVideoDeviceDoc::URL_RTSP, sUrl, nDummyPort, nDummyMode);
+	CStringA sRequest;
+	sRequest.Format("OPTIONS %s RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: ContaCam\r\n\r\n", (LPCSTR)CStringA(sUrl));
+	CStringA sResponse;
+	RtspRequest(addr, nAddrLen, nPort, sRequest, sResponse);
+	int nPos = sResponse.Find("\r\nServer:");
+	if (nPos < 0)
+		return CString();
+	nPos += 9;
+	int nEnd = sResponse.Find("\r\n", nPos);
+	if (nEnd < 0)
+		nEnd = sResponse.GetLength();
+	CString sServer(sResponse.Mid(nPos, nEnd - nPos));
+	sServer.Trim();
+	return sServer;
+}
+
+// Returns 1 if a stream path has been found, 0 if not found, -1 if a login is required or wrong,
+// 2 if the camera answers every path (the path is then a guess)
 static int FindRtspPath(const SOCKADDR_STORAGE& addr,
 						int nAddrLen,
 						const CString& sHost,
 						int nPort,
 						const CString& sUser,
 						const CString& sPass,
+						const CString& sInfoHint,
 						CScanSink& sink,
 						CString& sPathOut)
 {
+	// Some cameras answer 200 to any path: the first path of the list would always match
+	int nBogus = RtspDescribe(addr, nAddrLen, sHost, nPort, _T("/contacam-no-such-stream"), sUser, sPass);
+	if (nBogus == 200)
+	{
+		BOOL bYoosee = (sInfoHint.Find(_T("Yoosee")) >= 0 || sInfoHint.Find(_T("Gwell")) >= 0);
+		sPathOut = bYoosee ? _T("/onvif1") : _T("/11");
+		return 2;
+	}
 	for (int i = 0; i < RTSP_PATHS_COUNT; i++)
 	{
 		if (sink.IsCancelled())
@@ -604,7 +681,8 @@ static BOOL DetectEsp32Cam(const SOCKADDR_STORAGE& addr, int nAddrLen, const CSt
 void CCameraScanner::ScanLan(	CScanSink& sink,
 								const CStringArray& saExcludeHosts,
 								const CString& sUser,
-								const CString& sPass)
+								const CString& sPass,
+								const CString& sStartHost)
 {
 	// Local subnets
 	CArray<DWORD, DWORD> aLocalIps;
@@ -641,6 +719,44 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		}
 	}
 
+	// IP given by the user: its /24 subnet is swept too (it may not be one of the local
+	// subnets) and the sweep starts at that address, for example 192.168.1.2 finds 192.168.1.3
+	DWORD dwStartIp = 0;
+	if (!sStartHost.IsEmpty())
+	{
+		unsigned long ulAddr = ::inet_addr(CStringA(sStartHost));
+		if (ulAddr != INADDR_NONE && ulAddr != 0)
+		{
+			dwStartIp = ntohl(ulAddr);
+			DWORD dwNet = dwStartIp & 0xFFFFFF00;
+			for (DWORD dwIp = dwNet + 1; dwIp < dwNet + 255; dwIp++)
+			{
+				BYTE byDummy;
+				if (!mapSeen.Lookup(dwIp, byDummy))
+				{
+					mapSeen.SetAt(dwIp, 1);
+					aHosts.Add(dwIp);
+				}
+			}
+			// Rotate the list so that the sweep starts after the given address
+			int nFirst = -1;
+			for (i = 0; i < aHosts.GetSize() && nFirst < 0; i++)
+			{
+				if ((aHosts[i] & 0xFFFFFF00) == dwNet && aHosts[i] > dwStartIp)
+					nFirst = i;
+			}
+			if (nFirst > 0)
+			{
+				CArray<DWORD, DWORD> aRotated;
+				for (i = nFirst; i < aHosts.GetSize(); i++)
+					aRotated.Add(aHosts[i]);
+				for (i = 0; i < nFirst; i++)
+					aRotated.Add(aHosts[i]);
+				aHosts.Copy(aRotated);
+			}
+		}
+	}
+
 	// ONVIF discovery
 	CMapStringToString mapOnvif;
 	sink.OnStatus(_T("Searching ONVIF cameras..."));
@@ -652,7 +768,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 	const int nHostCount = (int)aHosts.GetSize();
 	const int nTotal = nHostCount * LAN_PORTS_COUNT;
 	const int BATCH = 60;
-	CArray<BYTE, BYTE> aOpenMask; // bit mask of the open ports of each host
+	CArray<DWORD, DWORD> aOpenMask; // bit mask of the open ports of each host
 	aOpenMask.SetSize(nHostCount);
 	for (i = 0; i < nHostCount; i++)
 		aOpenMask[i] = 0;
@@ -688,7 +804,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 			if (::connect(s, (sockaddr*)&a, sizeof(a)) == 0)
 			{
 				sockets[k] = s;
-				aOpenMask[nHost] = (BYTE)(aOpenMask[nHost] | (1 << nPortIdx));
+				aOpenMask[nHost] = aOpenMask[nHost] | (1 << nPortIdx);
 			}
 			else if (::WSAGetLastError() == WSAEWOULDBLOCK)
 			{
@@ -732,7 +848,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 					{
 						int nHost = (nStart + k) / LAN_PORTS_COUNT;
 						int nPortIdx = (nStart + k) % LAN_PORTS_COUNT;
-						aOpenMask[nHost] = (BYTE)(aOpenMask[nHost] | (1 << nPortIdx));
+						aOpenMask[nHost] = aOpenMask[nHost] | (1 << nPortIdx);
 						bPending[k] = FALSE;
 						nPending--;
 					}
@@ -749,6 +865,8 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 			if (sockets[k] != INVALID_SOCKET)
 				::closesocket(sockets[k]);
 		}
+		if (sink.GetBatchDelayMs() > 0)
+			::Sleep(sink.GetBatchDelayMs());
 	}
 
 	// Check which protocol the open ports speak and look for the stream path
@@ -781,21 +899,20 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 			}
 		}
 
-		int nRtspPort = 0;
-		for (int p = 0; p < LAN_RTSP_PORTS_COUNT && nRtspPort == 0; p++)
+		// Every open port that speaks RTSP is tried: when the stream path is not found
+		// on the first one (554) the next ones (10554, 8554, ...) are tried
+		CArray<int, int> aRtspPorts;
+		for (int p = 0; p < LAN_RTSP_PORTS_COUNT; p++)
 		{
-			if (aOpenMask[nHost] & (1 << p))
-			{
-				if (ProbeTcpPort(addr, nAddrLen, LAN_PORTS[p], sHostA) == 1)
-					nRtspPort = LAN_PORTS[p];
-			}
+			if ((aOpenMask[nHost] & (1 << p)) && ProbeTcpPort(addr, nAddrLen, LAN_PORTS[p], sHostA) == 1)
+				aRtspPorts.Add(LAN_PORTS[p]);
 		}
-		if (nRtspPort == 0)
+		if (aRtspPorts.GetSize() == 0)
 			continue;
 
 		CFoundCamera cam;
 		cam.m_sHost = sHost;
-		cam.m_nPort = nRtspPort;
+		cam.m_nPort = aRtspPorts[0];
 		cam.m_sType = _T("RTSP");
 		CString sOnvifInfo;
 		if (mapOnvif.Lookup(sHost, sOnvifInfo))
@@ -809,14 +926,28 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		sStatus.Format(_T("Camera found at %s, looking for the stream path..."), sHost);
 		sink.OnStatus(sStatus);
 		CString sPath;
-		int nRes = FindRtspPath(addr, nAddrLen, sHost, nRtspPort, sUser, sPass, sink, sPath);
+		int nRes = 0;
+		for (int p = 0; p < aRtspPorts.GetSize(); p++)
+		{
+			nRes = FindRtspPath(addr, nAddrLen, sHost, aRtspPorts[p], sUser, sPass, cam.m_sInfo, sink, sPath);
+			if (nRes != 0)
+			{
+				cam.m_nPort = aRtspPorts[p];
+				break;
+			}
+		}
 		CString sNote;
-		if (nRes == 1)
+		if (nRes == 1 || nRes == 2)
 		{
 			int nDummyPort;
 			int nDummyMode;
-			CHostPortDlg::MakeUrl(sHost, nRtspPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
+			CHostPortDlg::MakeUrl(sHost, cam.m_nPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
+			cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker);
 			sNote = _T("path ") + sPath;
+			if (nRes == 2)
+				sNote += _T(" (the camera answers every path, main stream guessed)");
+			if (!cam.m_sMaker.IsEmpty())
+				sNote += _T(", maker: ") + cam.m_sMaker;
 		}
 		else if (nRes < 0)
 		{
@@ -826,6 +957,12 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		}
 		else
 			sNote = _T("stream path unknown, choose the camera maker");
+		if (cam.m_sInfo.IsEmpty())
+		{
+			CString sServer(RtspServerHeader(addr, nAddrLen, sHost, cam.m_nPort));
+			if (!sServer.IsEmpty())
+				cam.m_sInfo = sServer;
+		}
 		if (!cam.m_sInfo.IsEmpty())
 			cam.m_sInfo += _T(", ");
 		cam.m_sInfo += sNote;
@@ -862,7 +999,8 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 								const CString& sHost,
 								int nPort,
 								const CString& sUser,
-								const CString& sPass)
+								const CString& sPass,
+								BOOL bReportSingleCamera)
 {
 	SOCKADDR_STORAGE addr;
 	int nAddrLen;
@@ -905,6 +1043,37 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 		return;
 	}
 
+	// A standalone camera answers every channel path: it is not a DVR/NVR and listing 32
+	// channels would only repeat the same camera. The cameras of the network are found
+	// by the network scan
+	CString sBogusPath;
+	sBogusPath.Format(DVR_TEMPLATES[nTemplate].m_sPath, 99);
+	if (RtspDescribe(addr, nAddrLen, sHost, nPort, sBogusPath, sUser, sPass) == 200)
+	{
+		CString sMsg;
+		sMsg.Format(_T("%s is a single camera, not a DVR (it answers every channel)."), sHost);
+		sink.OnStatus(sMsg);
+		if (bReportSingleCamera)
+		{
+			CFoundCamera cam;
+			cam.m_sHost = sHost;
+			cam.m_nPort = nPort;
+			CString sPath;
+			int nRes = FindRtspPath(addr, nAddrLen, sHost, nPort, sUser, sPass, CString(), sink, sPath);
+			if (nRes == 1 || nRes == 2)
+			{
+				int nDummyPort;
+				int nDummyMode;
+				CHostPortDlg::MakeUrl(sHost, nPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
+				cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker);
+			}
+			cam.m_sType = _T("RTSP");
+			cam.m_sInfo = _T("single camera, path ") + sPath;
+			sink.OnFound(cam);
+		}
+		return;
+	}
+
 	// Enumerate the channels, stop after 4 missing channels in a row
 	int nFound = 0;
 	int nMisses = 0;
@@ -927,6 +1096,9 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 			CHostPortDlg::MakeUrl(sHost, nPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
 			cam.m_sType.Format(_T("DVR ch %d"), nCh);
 			cam.m_sInfo = DVR_TEMPLATES[nTemplate].m_sName;
+			cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker); // only channel 1 has an entry in the maker list
+			if (cam.m_nMode >= 0)
+				cam.m_sInfo += _T(", maker: ") + cam.m_sMaker;
 			sink.OnFound(cam);
 			nFound++;
 			nMisses = 0;
@@ -949,6 +1121,7 @@ public:
 	virtual void OnFound(const CFoundCamera& cam) { m_Found.Add(cam); };
 	virtual void OnStatus(const CString& sStatus) { ; };
 	virtual BOOL IsCancelled() { return m_Parent.IsCancelled(); };
+	virtual DWORD GetBatchDelayMs() { return m_Parent.GetBatchDelayMs(); };
 	CArray<CFoundCamera, const CFoundCamera&> m_Found;
 protected:
 	CScanSink& m_Parent;
@@ -961,14 +1134,14 @@ static UINT AutoScanThreadProc(LPVOID pParam)
 	// Other cameras in the network
 	CStringArray saExclude;
 	saExclude.Add(pCtx->m_sHost);
-	CCameraScanner::ScanLan(*pCtx, saExclude, pCtx->m_sUser, pCtx->m_sPass);
+	CCameraScanner::ScanLan(*pCtx, saExclude, pCtx->m_sUser, pCtx->m_sPass, CString());
 
 	// A DVR/NVR shows its channels on the same address,
 	// report them only if there are at least two
 	if (pCtx->m_nPort > 0 && !pCtx->IsCancelled())
 	{
 		CCollectSink DvrSink(*pCtx);
-		CCameraScanner::ScanDvr(DvrSink, pCtx->m_sHost, pCtx->m_nPort, pCtx->m_sUser, pCtx->m_sPass);
+		CCameraScanner::ScanDvr(DvrSink, pCtx->m_sHost, pCtx->m_nPort, pCtx->m_sUser, pCtx->m_sPass, FALSE);
 		if (DvrSink.m_Found.GetSize() >= 2)
 			pCtx->m_Found.Append(DvrSink.m_Found);
 	}
@@ -1012,6 +1185,7 @@ protected:
 
 struct CScanJob
 {
+	BOOL m_bLan;
 	BOOL m_bDvr;
 	CString m_sHost;
 	int m_nPort;
@@ -1026,14 +1200,15 @@ static UINT DlgScanThreadProc(LPVOID pParam)
 {
 	CScanJob* pJob = (CScanJob*)pParam;
 	CDlgScanSink sink(pJob->m_hWnd, pJob->m_plCancel);
+	// DVR first (fast), then the sweep of the network
 	if (pJob->m_bDvr)
-		CCameraScanner::ScanDvr(sink, pJob->m_sHost, pJob->m_nPort, pJob->m_sUser, pJob->m_sPass);
-	else
+		CCameraScanner::ScanDvr(sink, pJob->m_sHost, pJob->m_nPort, pJob->m_sUser, pJob->m_sPass, !pJob->m_bLan);
+	if (pJob->m_bLan && !sink.IsCancelled())
 	{
 		CStringArray saExclude;
 		if (!pJob->m_sExclude.IsEmpty())
 			saExclude.Add(pJob->m_sExclude);
-		CCameraScanner::ScanLan(sink, saExclude, pJob->m_sUser, pJob->m_sPass);
+		CCameraScanner::ScanLan(sink, saExclude, pJob->m_sUser, pJob->m_sPass, pJob->m_sHost);
 	}
 	::PostMessage(pJob->m_hWnd, WM_SCAN_DONE, 0, 0);
 	delete pJob;
@@ -1100,9 +1275,9 @@ BOOL CCameraScanDlg::OnInitDialog()
 
 	EnableDisableCtrls();
 	if (m_bAutoScanLan)
-		StartScan(FALSE);
+		StartScan(TRUE, !m_sDvrHost.IsEmpty());
 	else if (m_bAutoScanDvr)
-		StartScan(TRUE);
+		StartScan(FALSE, TRUE);
 
 	return TRUE;
 }
@@ -1144,7 +1319,7 @@ void CCameraScanDlg::AddItem(const CFoundCamera& cam)
 	pList->SetCheck(nIndex, (!bRunning && !cam.m_sUrl.IsEmpty()) ? TRUE : FALSE);
 }
 
-void CCameraScanDlg::StartScan(BOOL bDvr)
+void CCameraScanDlg::StartScan(BOOL bLan, BOOL bDvr)
 {
 	StopScan();
 
@@ -1152,33 +1327,31 @@ void CCameraScanDlg::StartScan(BOOL bDvr)
 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(m_sPass);
 
 	CScanJob* pJob = new CScanJob;
+	pJob->m_bLan = bLan;
 	pJob->m_bDvr = bDvr;
 	pJob->m_nPort = RTSP_DEFAULT_PORT;
 	pJob->m_sUser = m_sUser;
 	pJob->m_sPass = m_sPass;
 	pJob->m_sExclude = m_sExcludeHost;
-	if (bDvr)
+	// IP address with optional port: host or host:port
+	CString sDvr;
+	GetDlgItem(IDC_EDIT_SCAN_DVR)->GetWindowText(sDvr);
+	sDvr.Trim();
+	if (bDvr && sDvr.IsEmpty())
 	{
-		// DVR address with optional port: host or host:port
-		CString sDvr;
-		GetDlgItem(IDC_EDIT_SCAN_DVR)->GetWindowText(sDvr);
-		sDvr.Trim();
-		if (sDvr.IsEmpty())
-		{
-			GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Enter the DVR IP address first (host or host:port)."));
-			delete pJob;
-			return;
-		}
-		int nColon = sDvr.Find(_T(':'));
-		if (nColon >= 0)
-		{
-			int nPort = _ttoi(sDvr.Mid(nColon + 1));
-			if (nPort > 0 && nPort <= 65535)
-				pJob->m_nPort = nPort;
-			sDvr = sDvr.Left(nColon);
-		}
-		pJob->m_sHost = sDvr;
+		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Enter the DVR IP address first (host or host:port)."));
+		delete pJob;
+		return;
 	}
+	int nColon = sDvr.Find(_T(':'));
+	if (nColon >= 0)
+	{
+		int nPort = _ttoi(sDvr.Mid(nColon + 1));
+		if (nPort > 0 && nPort <= 65535)
+			pJob->m_nPort = nPort;
+		sDvr = sDvr.Left(nColon);
+	}
+	pJob->m_sHost = sDvr;
 	pJob->m_hWnd = GetSafeHwnd();
 	pJob->m_plCancel = &m_lCancel;
 	m_lCancel = 0;
@@ -1210,12 +1383,16 @@ void CCameraScanDlg::StopScan()
 
 void CCameraScanDlg::OnButtonScanLan()
 {
-	StartScan(FALSE);
+	// Empty IP field: sweep the whole network. IP given: sweep the network and scan that DVR
+	CString sIp;
+	GetDlgItem(IDC_EDIT_SCAN_DVR)->GetWindowText(sIp);
+	sIp.Trim();
+	StartScan(TRUE, !sIp.IsEmpty());
 }
 
 void CCameraScanDlg::OnButtonScanDvr()
 {
-	StartScan(TRUE);
+	StartScan(FALSE, TRUE);
 }
 
 void CCameraScanDlg::OnButtonScanStop()
@@ -1275,6 +1452,8 @@ void CCameraScanDlg::OnOK()
 				// Yoosee/Gwell cameras: use the stable sub stream path /onvif2
 				if (cam.m_sInfo.Find(_T("Yoosee")) != -1 || cam.m_sInfo.Find(_T("Gwell")) != -1)
 					cam.m_sUrl.Format(_T("rtsp://%s:%d/onvif2"), cam.m_sHost, cam.m_nPort);
+				// Fill the camera maker settings automatically from the stream path
+				// (done by OpenNetworkCamera with CCameraScanner::ModeFromRtspPath())
 
 				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, m_sUser, m_sPass))
 					m_nOpened++;

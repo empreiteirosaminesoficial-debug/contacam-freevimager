@@ -1320,18 +1320,7 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 		int nSplitPort = 0;
 		if (SplitStreamUrl(sUrl, bRtsp, sSplitUser, sSplitPass, sSplitHost, nSplitPort, sSplitPath) && bRtsp && !sSplitHost.IsEmpty())
 		{
-			sSplitPath.MakeLower();
-			int nKnownMode = -1;
-			if (sSplitPath == _T("/11"))
-				nKnownMode = CVideoDeviceDoc::GENERIC_1_RTSP;
-			else if (sSplitPath == _T("/onvif1"))
-				nKnownMode = CVideoDeviceDoc::GENERIC_2_RTSP;
-			else if (sSplitPath == _T("/live/ch0"))
-				nKnownMode = CVideoDeviceDoc::GENERIC_3_RTSP;
-			else if (sSplitPath == _T("/1"))
-				nKnownMode = CVideoDeviceDoc::GENERIC_7_RTSP;
-			else if (sSplitPath == _T("/onvif2"))
-				nKnownMode = CVideoDeviceDoc::GENERIC_8_RTSP;
+			int nKnownMode = CCameraScanner::ModeFromRtspPath(sSplitPath);
 			if (nKnownMode >= 0)
 			{
 				Dlg.m_sHost = sSplitHost;
@@ -1363,9 +1352,19 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 
 void CHostPortDlg::OnButtonOpenScanLan()
 {
+	// Empty host field: sweep the whole network. Host given: sweep the network starting
+	// from that IP and scan the DVR at that address
+	CString sHostToScan;
+	CString sLocation;
+	int nUrlPort;
+	int nUrlMode;
+	ParseUrl(m_sHost, m_nPort, m_nDeviceTypeMode, sHostToScan, nUrlPort, sLocation, nUrlMode);
+
 	CCameraScanDlg Dlg(this);
 	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(Dlg.m_sUser);
 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(Dlg.m_sPass);
+	Dlg.m_sDvrHost = sHostToScan;
+	Dlg.m_nDvrPort = (nUrlPort > 0 && nUrlPort <= 65535) ? nUrlPort : RTSP_DEFAULT_PORT;
 	Dlg.m_bAutoScanLan = TRUE;
 	if (Dlg.DoModal() == IDOK && Dlg.m_nOpened > 0)
 		EndDialog(IDCANCEL); // the scan dialog has already opened the cameras
