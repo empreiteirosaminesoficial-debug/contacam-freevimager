@@ -2661,7 +2661,15 @@ int CVideoDeviceDoc::CRtspThread::Work()
 
 		// If set, and if TCP is available as RTSP transport, then TCP will be tried first instead of UDP
 		if (m_pDoc->m_bPreferTcpforRtsp)
+		{
 			av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);
+
+			// Offer only TCP in the SETUP request: some cameras (Yoosee/Gwell) answer
+			// '400 Bad Request' when the Transport header lists several alternatives
+			// (TCP and UDP). If the camera refuses it we retry below with UDP
+			if (!m_pDoc->m_bUdpMulticastforRtsp)
+				av_dict_set(&opts, "rtsp_transport", "tcp", 0);
+		}
 		
 		// Use UDP Multicast as RTSP transport
 		// Attention: when both prefer_tcp and udp_multicast are set, ffmpeg chooses UDP multicast and
@@ -2708,6 +2716,7 @@ int CVideoDeviceDoc::CRtspThread::Work()
 			opts = optsFallback;
 			optsFallback = NULL;
 			av_dict_set(&opts, "rtsp_flags", NULL, 0); // remove prefer_tcp
+			av_dict_set(&opts, "rtsp_transport", NULL, 0); // remove tcp
 			pFormatCtx = avformat_alloc_context();
 			if (!pFormatCtx)
 			{
