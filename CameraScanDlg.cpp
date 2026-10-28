@@ -1449,9 +1449,9 @@ void CCameraScanDlg::OnOK()
 			{
 				CFoundCamera cam(m_Items[nItem]);
 
-				// Yoosee/Gwell cameras: use the stable sub stream path /onvif2
+				// Yoosee/Gwell cameras only work with the path /onvif1 (Generic /onvif1, RTSP Transport unchecked)
 				if (cam.m_sInfo.Find(_T("Yoosee")) != -1 || cam.m_sInfo.Find(_T("Gwell")) != -1)
-					cam.m_sUrl.Format(_T("rtsp://%s:%d/onvif2"), cam.m_sHost, cam.m_nPort);
+					cam.m_sUrl.Format(_T("rtsp://%s:%d/onvif1"), cam.m_sHost, cam.m_nPort);
 				// Fill the camera maker settings automatically from the stream path
 				// (done by OpenNetworkCamera with CCameraScanner::ModeFromRtspPath())
 
