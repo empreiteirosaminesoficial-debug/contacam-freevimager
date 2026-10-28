@@ -2796,6 +2796,7 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		// Get frames
 		llLastOKUpTime = (LONGLONG)::GetTickCount64();
 		int64_t llPrevPts = AV_NOPTS_VALUE;
+		int nCorruptSkipped = 0; // consecutive frames not shown because of packet loss
 		for (;;)
 		{
 			AVPacket avpkt;
@@ -2866,6 +2867,20 @@ int CVideoDeviceDoc::CRtspThread::Work()
 						goto packet_free;
 					}
 					decoded = MIN(ret, avpkt.size);
+
+					// With the UDP transport lost packets produce frames with garbled areas (typical
+					// for 1080p H.265 over Wi-Fi): do not show them, the last good frame stays on
+					// screen. After 30 frames in a row we show them anyway to not freeze the image
+					if (got_picture)
+					{
+						if (pVideoFrame->decode_error_flags != 0 && nCorruptSkipped < 30)
+						{
+							nCorruptSkipped++;
+							got_picture = 0;
+						}
+						else
+							nCorruptSkipped = 0;
+					}
 
 					// Convert and Process
 					if (got_picture)
