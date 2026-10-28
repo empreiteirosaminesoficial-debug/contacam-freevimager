@@ -309,7 +309,7 @@ BOOL CHostPortDlg::OnInitDialog()
 	CUImagerApp::RichEditCtrlAppendText(pRichEditHttpPorts, _T(", 88"), ::GetSysColor(COLOR_WINDOWTEXT));
 
 	// Update Controls
-	// Search other cameras after the first successful connection of a new camera
+	// Search outras cameras after the first successful connection of a new camera
 	((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->SetCheck(::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1) ? 1 : 0);
 
 	EnableDisableCtrls();
@@ -998,7 +998,7 @@ void CHostPortDlg::OnButtonFillFromUrl()
 	}
 
 	// Known generic RTSP paths are mapped to the Camera Maker and Protocol list,
-	// all the other urls are kept as full url in the host field
+	// all the outras urls are kept as full url in the host field
 	// (ParseUrl() and MakeUrl() already handle that case)
 	CString sNewHost;
 	int nNewMode;
@@ -1149,7 +1149,7 @@ void CHostPortDlg::OnButtonScanPorts()
 	if (!CNetCom::StringToAddress(sHostToScan, _T("0"), (sockaddr*)&addr))
 	{
 		::AlertUser(GetSafeHwnd());
-		::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, _T("Cannot resolve ") + sHostToScan, 0);
+		::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, _T("N\u00e3o foi poss\u00edvel resolver ") + sHostToScan, 0);
 		return;
 	}
 	int nAddrLen = (addr.ss_family == AF_INET6) ? (int)sizeof(SOCKADDR_IN6) : (int)sizeof(SOCKADDR_IN);
@@ -1260,18 +1260,18 @@ void CHostPortDlg::OnButtonScanPorts()
 	// Report
 	CString sMsg;
 	if (sRtspPorts.IsEmpty() && sHttpPorts.IsEmpty() && sOtherPorts.IsEmpty())
-		sMsg = _T("No open port found on ") + sHostToScan + _T(". Check the IP address, the power and the network connection of the camera.");
+		sMsg = _T("Nenhuma porta aberta encontrada em ") + sHostToScan + _T(". Verifique o IP, a energia e a conex\u00e3o de rede da c\u00e2mera.");
 	else
 	{
-		sMsg = _T("Open ports on ") + sHostToScan + _T(":");
+		sMsg = _T("Portas abertas em ") + sHostToScan + _T(":");
 		if (!sRtspPorts.IsEmpty())
 			sMsg += _T(" RTSP ") + sRtspPorts + _T(";");
 		if (!sHttpPorts.IsEmpty())
 			sMsg += _T(" HTTP ") + sHttpPorts + _T(";");
 		if (!sOtherPorts.IsEmpty())
-			sMsg += _T(" other ") + sOtherPorts + _T(";");
+			sMsg += _T(" outras ") + sOtherPorts + _T(";");
 		if (sRtspPorts.IsEmpty())
-			sMsg += _T(" no RTSP port found, enable RTSP in the camera or choose an HTTP maker.");
+			sMsg += _T(" nenhuma porta RTSP encontrada, ative o RTSP na c\u00e2mera ou escolha um fabricante HTTP.");
 	}
 
 	// Select the first RTSP port, when the host field holds
@@ -1283,7 +1283,7 @@ void CHostPortDlg::OnButtonScanPorts()
 		sPortText.Format(_T("%d"), nFirstRtspPort);
 		pEditPort->SetWindowText(sPortText);
 		m_nPort = nFirstRtspPort;
-		sMsg += _T(" RTSP port ") + sPortText + _T(" selected.");
+		sMsg += _T(" porta RTSP ") + sPortText + _T(" selecionada.");
 	}
 	::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, sMsg, 0);
 }

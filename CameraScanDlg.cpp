@@ -568,7 +568,7 @@ static void WsDiscovery(CScanSink& sink, const CArray<DWORD, DWORD>& aLocalIps, 
 		if (!sHardware.IsEmpty())
 			sInfo += (sInfo.IsEmpty() ? _T("") : _T(" / ")) + sHardware;
 		if (sInfo.IsEmpty())
-			sInfo = _T("ONVIF device");
+			sInfo = _T("Dispositivo ONVIF");
 		if (bYoosee)
 			sInfo = _T("Yoosee/Gwell, ") + sInfo;
 		mapInfo.SetAt(sHost, sInfo);
@@ -671,7 +671,7 @@ static BOOL DetectEsp32Cam(const SOCKADDR_STORAGE& addr, int nAddrLen, const CSt
 	cam.m_nPort = nStreamPort;
 	cam.m_sUrl = sUrl;
 	cam.m_sType = _T("ESP32-CAM");
-	cam.m_sInfo = (sName.IsEmpty() ? CString() : sName + _T(", ")) + _T("HTTP motion jpeg, one viewer at a time, snapshot: /capture");
+	cam.m_sInfo = (sName.IsEmpty() ? CString() : sName + _T(", ")) + _T("HTTP motion jpeg, um espectador por vez, snapshot: /capture");
 	return TRUE;
 }
 
@@ -690,7 +690,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 	GetLocalIpv4(aLocalIps, aLocalMasks);
 	if (aLocalIps.GetSize() == 0)
 	{
-		sink.OnStatus(_T("No active network connection found."));
+		sink.OnStatus(_T("Nenhuma conex\u00e3o de rede ativa encontrada."));
 		return;
 	}
 
@@ -759,7 +759,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 
 	// ONVIF discovery
 	CMapStringToString mapOnvif;
-	sink.OnStatus(_T("Searching ONVIF cameras..."));
+	sink.OnStatus(_T("Procurando c\u00e2meras ONVIF..."));
 	WsDiscovery(sink, aLocalIps, mapOnvif);
 	if (sink.IsCancelled())
 		return;
@@ -777,7 +777,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		if (sink.IsCancelled())
 			return;
 		CString sStatus;
-		sStatus.Format(_T("Scanning the network for RTSP ports... %d%%"), nStart * 100 / nTotal);
+		sStatus.Format(_T("Varrendo a rede em busca de portas RTSP... %d%%"), nStart * 100 / nTotal);
 		sink.OnStatus(sStatus);
 
 		int nCount = (nTotal - nStart < BATCH) ? (nTotal - nStart) : BATCH;
@@ -923,7 +923,7 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		}
 
 		CString sStatus;
-		sStatus.Format(_T("Camera found at %s, looking for the stream path..."), sHost);
+		sStatus.Format(_T("C\u00e2mera encontrada em %s, procurando o caminho do stream..."), sHost);
 		sink.OnStatus(sStatus);
 		CString sPath;
 		int nRes = 0;
@@ -943,20 +943,20 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 			int nDummyMode;
 			CHostPortDlg::MakeUrl(sHost, cam.m_nPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
 			cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker);
-			sNote = _T("path ") + sPath;
+			sNote = _T("caminho ") + sPath;
 			if (nRes == 2)
-				sNote += _T(" (the camera answers every path, main stream guessed)");
+				sNote += _T(" (a c\u00e2mera responde a qualquer caminho, stream principal estimado)");
 			if (!cam.m_sMaker.IsEmpty())
-				sNote += _T(", maker: ") + cam.m_sMaker;
+				sNote += _T(", fabricante: ") + cam.m_sMaker;
 		}
 		else if (nRes < 0)
 		{
-			sNote = sUser.IsEmpty() ? _T("login required") : _T("login rejected");
+			sNote = sUser.IsEmpty() ? _T("login necess\u00e1rio") : _T("login recusado");
 			if (cam.m_sInfo.Find(_T("Yoosee")) >= 0)
-				sNote += _T(" (Yoosee: user admin and the RTSP password set in the Yoosee app)");
+				sNote += _T(" (Yoosee: usu\u00e1rio admin e a senha RTSP definida no app Yoosee)");
 		}
 		else
-			sNote = _T("stream path unknown, choose the camera maker");
+			sNote = _T("caminho do stream desconhecido, escolha o fabricante da c\u00e2mera");
 		if (cam.m_sInfo.IsEmpty())
 		{
 			CString sServer(RtspServerHeader(addr, nAddrLen, sHost, cam.m_nPort));
@@ -983,15 +983,15 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 		cam.m_sHost = sHost;
 		cam.m_nPort = RTSP_DEFAULT_PORT;
 		cam.m_sType = _T("ONVIF");
-		cam.m_sInfo = sInfo + _T(", RTSP port not detected");
+		cam.m_sInfo = sInfo + _T(", porta RTSP n\u00e3o detectada");
 		if (sInfo.Find(_T("Yoosee")) >= 0)
-			cam.m_sInfo += _T(" (Yoosee: enable RTSP in the Yoosee app)");
+			cam.m_sInfo += _T(" (Yoosee: ative o RTSP no app Yoosee)");
 		sink.OnFound(cam);
 		nFound++;
 	}
 
 	CString sDone;
-	sDone.Format(_T("Network scan finished: %d camera(s) found."), nFound);
+	sDone.Format(_T("Varredura da rede conclu\u00edda: %d c\u00e2mera(s) encontrada(s)."), nFound);
 	sink.OnStatus(sDone);
 }
 
@@ -1006,12 +1006,12 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 	int nAddrLen;
 	if (!ResolveHost(sHost, addr, nAddrLen))
 	{
-		sink.OnStatus(_T("Cannot resolve ") + sHost);
+		sink.OnStatus(_T("N\u00e3o foi poss\u00edvel resolver ") + sHost);
 		return;
 	}
 
 	// Find the channel path format of this DVR/NVR
-	sink.OnStatus(_T("Detecting the DVR stream format..."));
+	sink.OnStatus(_T("Detectando o formato de stream do DVR..."));
 	int nTemplate = -1;
 	int t;
 	for (t = 0; t < DVR_TEMPLATES_COUNT && nTemplate < 0; t++)
@@ -1025,21 +1025,21 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 			nTemplate = t;
 		else if (nCode == 401)
 		{
-			sink.OnStatus(sUser.IsEmpty() ?	_T("The DVR requires a user name and a password.") :
-											_T("DVR login rejected: check user name and password."));
+			sink.OnStatus(sUser.IsEmpty() ?	_T("O DVR exige usu\u00e1rio e senha.") :
+											_T("Login do DVR recusado: verifique usu\u00e1rio e senha."));
 			return;
 		}
 		else if (nCode == 0 && t == 0)
 		{
 			CString sMsg;
-			sMsg.Format(_T("No RTSP answer from %s port %d."), sHost, nPort);
+			sMsg.Format(_T("Sem resposta RTSP de %s porta %d."), sHost, nPort);
 			sink.OnStatus(sMsg);
 			return;
 		}
 	}
 	if (nTemplate < 0)
 	{
-		sink.OnStatus(_T("No known DVR channel format found: enter the DVR as a camera and choose its maker."));
+		sink.OnStatus(_T("Nenhum formato de canal de DVR conhecido: cadastre o DVR como c\u00e2mera e escolha o fabricante."));
 		return;
 	}
 
@@ -1051,7 +1051,7 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 	if (RtspDescribe(addr, nAddrLen, sHost, nPort, sBogusPath, sUser, sPass) == 200)
 	{
 		CString sMsg;
-		sMsg.Format(_T("%s is a single camera, not a DVR (it answers every channel)."), sHost);
+		sMsg.Format(_T("%s \u00e9 uma c\u00e2mera \u00fanica, n\u00e3o um DVR (responde a todos os canais)."), sHost);
 		sink.OnStatus(sMsg);
 		if (bReportSingleCamera)
 		{
@@ -1068,7 +1068,7 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 				cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker);
 			}
 			cam.m_sType = _T("RTSP");
-			cam.m_sInfo = _T("single camera, path ") + sPath;
+			cam.m_sInfo = _T("c\u00e2mera \u00fanica, caminho ") + sPath;
 			sink.OnFound(cam);
 		}
 		return;
@@ -1082,7 +1082,7 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 		if (sink.IsCancelled())
 			return;
 		CString sStatus;
-		sStatus.Format(_T("Checking DVR channel %d..."), nCh);
+		sStatus.Format(_T("Verificando canal %d do DVR..."), nCh);
 		sink.OnStatus(sStatus);
 		CString sPath;
 		sPath.Format(DVR_TEMPLATES[nTemplate].m_sPath, nCh);
@@ -1094,11 +1094,11 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 			int nDummyPort;
 			int nDummyMode;
 			CHostPortDlg::MakeUrl(sHost, nPort, sPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
-			cam.m_sType.Format(_T("DVR ch %d"), nCh);
+			cam.m_sType.Format(_T("Canal DVR %d"), nCh);
 			cam.m_sInfo = DVR_TEMPLATES[nTemplate].m_sName;
 			cam.m_nMode = ModeFromRtspPath(sPath, &cam.m_sMaker); // only channel 1 has an entry in the maker list
 			if (cam.m_nMode >= 0)
-				cam.m_sInfo += _T(", maker: ") + cam.m_sMaker;
+				cam.m_sInfo += _T(", fabricante: ") + cam.m_sMaker;
 			sink.OnFound(cam);
 			nFound++;
 			nMisses = 0;
@@ -1107,7 +1107,7 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
 			nMisses++;
 	}
 	CString sDone;
-	sDone.Format(_T("DVR scan finished: %d channel(s) found."), nFound);
+	sDone.Format(_T("Varredura do DVR conclu\u00edda: %d canal(is) encontrado(s)."), nFound);
 	sink.OnStatus(sDone);
 }
 
@@ -1251,9 +1251,9 @@ BOOL CCameraScanDlg::OnInitDialog()
 	// List
 	CListCtrl* pList = (CListCtrl*)GetDlgItem(IDC_LIST_FOUND_CAMERAS);
 	pList->SetExtendedStyle(pList->GetExtendedStyle() | LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT);
-	pList->InsertColumn(0, _T("Address"), LVCFMT_LEFT, 175);
-	pList->InsertColumn(1, _T("Type"), LVCFMT_LEFT, 75);
-	pList->InsertColumn(2, _T("Info"), LVCFMT_LEFT, 200);
+	pList->InsertColumn(0, _T("Endere\u00e7o"), LVCFMT_LEFT, 175);
+	pList->InsertColumn(1, _T("Tipo"), LVCFMT_LEFT, 75);
+	pList->InsertColumn(2, _T("Informa\u00e7\u00f5es"), LVCFMT_LEFT, 200);
 
 	// Login and DVR address
 	GetDlgItem(IDC_AUTH_USERNAME)->SetWindowText(m_sUser);
@@ -1269,7 +1269,7 @@ BOOL CCameraScanDlg::OnInitDialog()
 	if (m_Found.GetSize() > 0)
 	{
 		CString sStatus;
-		sStatus.Format(_T("%d camera(s) or channel(s) found, check the ones to open."), (int)m_Found.GetSize());
+		sStatus.Format(_T("%d c\u00e2mera(s) ou canal(is) encontrado(s), marque as que deseja abrir."), (int)m_Found.GetSize());
 		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(sStatus);
 	}
 
@@ -1311,7 +1311,7 @@ void CCameraScanDlg::AddItem(const CFoundCamera& cam)
 													CVideoDeviceDoc::GENERIC_1_RTSP);
 	CString sInfo(cam.m_sInfo);
 	if (bRunning)
-		sInfo = _T("already open, ") + sInfo;
+		sInfo = _T("j\u00e1 aberta, ") + sInfo;
 	int nIndex = pList->InsertItem(pList->GetItemCount(), sAddress);
 	pList->SetItemText(nIndex, 1, cam.m_sType);
 	pList->SetItemText(nIndex, 2, sInfo);
@@ -1339,7 +1339,7 @@ void CCameraScanDlg::StartScan(BOOL bLan, BOOL bDvr)
 	sDvr.Trim();
 	if (bDvr && sDvr.IsEmpty())
 	{
-		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Enter the DVR IP address first (host or host:port)."));
+		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Digite primeiro o IP do DVR (host ou host:porta)."));
 		delete pJob;
 		return;
 	}
@@ -1398,7 +1398,7 @@ void CCameraScanDlg::OnButtonScanDvr()
 void CCameraScanDlg::OnButtonScanStop()
 {
 	StopScan();
-	GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Scan stopped."));
+	GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Varredura interrompida."));
 	EnableDisableCtrls();
 }
 
@@ -1462,7 +1462,7 @@ void CCameraScanDlg::OnOK()
 	}
 	if (m_nOpened == 0)
 	{
-		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Check at least one camera that is not already open."));
+		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Marque pelo menos uma c\u00e2mera que ainda n\u00e3o esteja aberta."));
 		EnableDisableCtrls();
 		return;
 	}
