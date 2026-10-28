@@ -1271,6 +1271,11 @@ void CCameraScanDlg::OnOK()
 			if (nItem >= 0 && nItem < m_Items.GetSize())
 			{
 				CFoundCamera cam(m_Items[nItem]);
+
+				// Yoosee/Gwell cameras: use the stable sub stream path /onvif2
+				if (cam.m_sInfo.Find(_T("Yoosee")) != -1 || cam.m_sInfo.Find(_T("Gwell")) != -1)
+					cam.m_sUrl.Format(_T("rtsp://%s:%d/onvif2"), cam.m_sHost, cam.m_nPort);
+
 				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, m_sUser, m_sPass))
 					m_nOpened++;
 			}
