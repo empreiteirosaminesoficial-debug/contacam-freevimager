@@ -44,6 +44,8 @@ static const LPCTSTR RTSP_PATHS[] =
 	_T("/11"),
 	_T("/onvif1"),
 	_T("/live/ch0"),
+	_T("/1"),			// Yoosee/Gwell GWIPC
+	_T("/onvif2"),		// Yoosee/Gwell sub stream
 	_T("/Streaming/Channels/101"),
 	_T("/cam/realmonitor?channel=1&subtype=0"),
 	_T("/h264Preview_01_main"),

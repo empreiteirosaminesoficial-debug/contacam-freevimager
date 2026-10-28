@@ -66,6 +66,8 @@ void CHostPortDlg::InitDeviceTypeModeArrayForCB(CArray<CDeviceTypeModePair>& a)
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /11 (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_1_RTSP));
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /onvif1 (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_2_RTSP));
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /live/ch0 (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_3_RTSP));
+	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /1 (RTSP) - Yoosee/Gwell GWIPC"), (DWORD)CVideoDeviceDoc::GENERIC_7_RTSP));
+	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /onvif2 (RTSP) - Yoosee/Gwell sub stream"), (DWORD)CVideoDeviceDoc::GENERIC_8_RTSP));
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /ch01.264 (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_4_RTSP));
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /channel=1&stream=0.sdp (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_5_RTSP));
 	a.Add(CDeviceTypeModePair(ML_STRING(1548, "Generic") + _T(" /channel=1_stream=0.sdp (RTSP)"), (DWORD)CVideoDeviceDoc::GENERIC_6_RTSP));
@@ -1012,6 +1014,10 @@ void CHostPortDlg::OnButtonFillFromUrl()
 			nNewMode = CVideoDeviceDoc::GENERIC_2_RTSP;
 		else if (sPath == _T("/live/ch0"))
 			nNewMode = CVideoDeviceDoc::GENERIC_3_RTSP;
+		else if (sPath == _T("/1"))
+			nNewMode = CVideoDeviceDoc::GENERIC_7_RTSP;
+		else if (sPath == _T("/onvif2"))
+			nNewMode = CVideoDeviceDoc::GENERIC_8_RTSP;
 		else
 			bKnownPath = FALSE;
 		if (bKnownPath)
@@ -1322,6 +1328,10 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 				nKnownMode = CVideoDeviceDoc::GENERIC_2_RTSP;
 			else if (sSplitPath == _T("/live/ch0"))
 				nKnownMode = CVideoDeviceDoc::GENERIC_3_RTSP;
+			else if (sSplitPath == _T("/1"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_7_RTSP;
+			else if (sSplitPath == _T("/onvif2"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_8_RTSP;
 			if (nKnownMode >= 0)
 			{
 				Dlg.m_sHost = sSplitHost;

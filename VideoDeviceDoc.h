@@ -563,6 +563,8 @@ public:
 		GENERIC_5_RTSP = 1014,			// Generic 5 RTSP device
 		SEVENLINKS_RTSP = 1015,			// 7Links RTSP
 		GENERIC_6_RTSP = 1016,			// Generic 6 RTSP device
+		GENERIC_7_RTSP = 1017,			// Generic 7 RTSP device (/1)
+		GENERIC_8_RTSP = 1018,			// Generic 8 RTSP device (/onvif2)
 		ABUS_RTSP = 1020,				// Abus RTSP
 		ACTI_RTSP = 1030,				// ACTi RTSP
 		AMCREST_RTSP = 1035,			// Amcrest RTSP

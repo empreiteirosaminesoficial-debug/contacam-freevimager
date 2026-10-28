@@ -9208,6 +9208,14 @@ void CVideoDeviceDoc::ConnectRtsp()
 			sPathAndQuery = _T("/live/ch0");
 			break;
 
+		case GENERIC_7_RTSP:		// Yoosee/Gwell GWIPC main stream
+			sPathAndQuery = _T("/1");
+			break;
+
+		case GENERIC_8_RTSP:		// Yoosee/Gwell sub stream
+			sPathAndQuery = _T("/onvif2");
+			break;
+
 		case GENERIC_4_RTSP:		// Chinavasion, Cotier, Ctronics, Escam, Xvision
 		case FALCONEYE_RTSP:		
 			sPathAndQuery = m_bPreferTcpforRtsp ? _T("/ch01.264?ptype=tcp") : _T("/ch01.264?ptype=udp");
