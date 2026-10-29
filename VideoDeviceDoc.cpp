@@ -3648,6 +3648,9 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 	m_pProcessFrameExtraDib->SetShowMessageBoxOnError(FALSE);
 	m_pDrawDibRGB32 = new CDib;
 	m_pDrawDibRGB32->SetShowMessageBoxOnError(FALSE);
+	// Smooth the live view when it is enlarged (full screen): HALFTONE interpolates instead of
+	// repeating pixels (COLORONCOLOR), the image is less blocky
+	m_pDrawDibRGB32->SetStretchMode(HALFTONE);
 	m_pCamOffDib = new CDib;
 	m_pCamOffDib->SetShowMessageBoxOnError(FALSE);
 
