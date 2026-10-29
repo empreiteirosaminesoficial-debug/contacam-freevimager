@@ -3270,6 +3270,219 @@ exit:
 	return 0;
 }
 
+// Crop manager
+CCropManager g_CropManager;
+
+// Unsharp mask on the Y plane (nAmount in percent, 100 = classic strength)
+static void CropSharpenLuma(BYTE* pY, int w, int h, int nAmount, std::vector<BYTE>& Tmp)
+{
+	if (w < 3 || h < 3 || nAmount <= 0)
+		return;
+	Tmp.assign(pY, pY + (size_t)w * h);
+	const BYTE* s = &Tmp[0];
+	for (int y = 1 ; y < h - 1 ; y++)
+	{
+		for (int x = 1 ; x < w - 1 ; x++)
+		{
+			int c = s[y * w + x];
+			int lap = 4 * c - s[y * w + x - 1] - s[y * w + x + 1] - s[(y - 1) * w + x] - s[(y + 1) * w + x];
+			int v = c + lap * nAmount / 400;
+			pY[y * w + x] = (BYTE)(v < 0 ? 0 : (v > 255 ? 255 : v));
+		}
+	}
+}
+
+CCropManager::CCropManager()
+{
+	::InitializeCriticalSection(&m_cs);
+	m_nCount = 0;
+}
+
+CCropManager::~CCropManager()
+{
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+		delete m_List[i];
+	m_List.clear();
+	::DeleteCriticalSection(&m_cs);
+}
+
+BOOL CCropManager::Link(CVideoDeviceDoc* pSrc, CVideoDeviceDoc* pDst, int nL, int nT, int nR, int nB)
+{
+	if (!pSrc || !pDst || pSrc == pDst || nR <= nL || nB <= nT)
+		return FALSE;
+	BOOL bRet = TRUE;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pDst == pDst)
+		{
+			bRet = FALSE; // already linked
+			break;
+		}
+	}
+	if (bRet)
+	{
+		CEntry* p = new CEntry;
+		p->m_pSrc = pSrc;
+		p->m_pDst = pDst;
+		p->m_nL = nL;
+		p->m_nT = nT;
+		p->m_nR = nR;
+		p->m_nB = nB;
+		p->m_nBusy = 0;
+		m_List.push_back(p);
+		m_nCount = (int)m_List.size();
+	}
+	::LeaveCriticalSection(&m_cs);
+	return bRet;
+}
+
+BOOL CCropManager::IsLinked(CVideoDeviceDoc* pDst)
+{
+	BOOL bRet = FALSE;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pDst == pDst)
+		{
+			bRet = TRUE;
+			break;
+		}
+	}
+	::LeaveCriticalSection(&m_cs);
+	return bRet;
+}
+
+void CCropManager::Remove(CVideoDeviceDoc* pDoc)
+{
+	if (m_nCount == 0)
+		return;
+
+	// Detach the entries, from now on Feed() cannot find them anymore
+	std::vector<CEntry*> Removed;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; )
+	{
+		if (m_List[i]->m_pSrc == pDoc || m_List[i]->m_pDst == pDoc)
+		{
+			Removed.push_back(m_List[i]);
+			m_List.erase(m_List.begin() + i);
+		}
+		else
+			i++;
+	}
+	m_nCount = (int)m_List.size();
+	::LeaveCriticalSection(&m_cs);
+
+	// Wait for the Feed() calls in progress (keep serving the messages sent to this thread)
+	for (size_t i = 0 ; i < Removed.size() ; i++)
+	{
+		while (Removed[i]->m_nBusy > 0)
+		{
+			MSG msg;
+			::PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+			::MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_SENDMESSAGE);
+		}
+		delete Removed[i];
+	}
+}
+
+// Called from the camera thread of pSrc with a frame in I420 format (packed planes)
+void CCropManager::Feed(CVideoDeviceDoc* pSrc, const BYTE* pI420, int nWidth, int nHeight, LONGLONG llPtsMs)
+{
+	if (m_nCount == 0 || !pI420 || nWidth < 16 || nHeight < 16)
+		return;
+
+	// Pick the entries of this source and mark them as busy
+	std::vector<CEntry*> Todo;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pSrc == pSrc)
+		{
+			::InterlockedIncrement(&m_List[i]->m_nBusy);
+			Todo.push_back(m_List[i]);
+		}
+	}
+	::LeaveCriticalSection(&m_cs);
+
+	// Crop and hand over
+	std::vector<BYTE> Buf;
+	std::vector<BYTE> Out;
+	std::vector<BYTE> Tmp;
+	for (size_t i = 0 ; i < Todo.size() ; i++)
+	{
+		CEntry* p = Todo[i];
+
+		// Even offset and size multiple of 4 (I420 needs even values, codecs like multiples of 4)
+		int x = ((int)((LONGLONG)nWidth * p->m_nL / 10000)) & ~1;
+		int y = ((int)((LONGLONG)nHeight * p->m_nT / 10000)) & ~1;
+		int w = ((int)((LONGLONG)nWidth * (p->m_nR - p->m_nL) / 10000)) & ~3;
+		int h = ((int)((LONGLONG)nHeight * (p->m_nB - p->m_nT) / 10000)) & ~3;
+		if (x + w > nWidth)
+			w = (nWidth - x) & ~3;
+		if (y + h > nHeight)
+			h = (nHeight - y) & ~3;
+		if (w >= 16 && h >= 16)
+		{
+			Buf.resize((size_t)w * h * 3 / 2);
+			BYTE* pDst = &Buf[0];
+			const BYTE* pSrcY = pI420;
+			const BYTE* pSrcU = pSrcY + (size_t)nWidth * nHeight;
+			const BYTE* pSrcV = pSrcU + (size_t)(nWidth / 2) * (nHeight / 2);
+			BYTE* pDstY = pDst;
+			BYTE* pDstU = pDstY + (size_t)w * h;
+			BYTE* pDstV = pDstU + (size_t)(w / 2) * (h / 2);
+			for (int r = 0 ; r < h ; r++)
+				memcpy(pDstY + (size_t)r * w, pSrcY + (size_t)(y + r) * nWidth + x, w);
+			for (int r = 0 ; r < h / 2 ; r++)
+			{
+				memcpy(pDstU + (size_t)r * (w / 2), pSrcU + (size_t)(y / 2 + r) * (nWidth / 2) + x / 2, w / 2);
+				memcpy(pDstV + (size_t)r * (w / 2), pSrcV + (size_t)(y / 2 + r) * (nWidth / 2) + x / 2, w / 2);
+			}
+			// Upscale with a smooth interpolation (instead of the blocky stretch done by the window)
+			// and sharpen, a small crop of a big picture looks much better this way
+			BYTE* pOut = pDst;
+			int ow = w;
+			int oh = h;
+			int nTargetW = p->m_pDst->m_nCropTargetWidth;
+			if (nTargetW > w && nTargetW <= 3840)
+			{
+				int nNewW = nTargetW & ~3;
+				int nNewH = ((int)((LONGLONG)h * nNewW / w)) & ~3;
+				if (nNewW >= 16 && nNewH >= 16)
+				{
+					p->m_pSws = sws_getCachedContextHelper(	p->m_pSws,
+															w, h, AV_PIX_FMT_YUV420P,
+															nNewW, nNewH, AV_PIX_FMT_YUV420P,
+															SWS_LANCZOS);
+					if (p->m_pSws)
+					{
+						Out.resize((size_t)nNewW * nNewH * 3 / 2);
+						const uint8_t* srcData[4] = {pDstY, pDstU, pDstV, NULL};
+						int srcStride[4] = {w, w / 2, w / 2, 0};
+						uint8_t* dstData[4] = {	&Out[0],
+												&Out[0] + (size_t)nNewW * nNewH,
+												&Out[0] + (size_t)nNewW * nNewH + (size_t)(nNewW / 2) * (nNewH / 2),
+												NULL};
+						int dstStride[4] = {nNewW, nNewW / 2, nNewW / 2, 0};
+						if (sws_scale(p->m_pSws, srcData, srcStride, 0, h, dstData, dstStride) > 0)
+						{
+							pOut = &Out[0];
+							ow = nNewW;
+							oh = nNewH;
+						}
+					}
+				}
+			}
+			if (pOut != pDst)
+				CropSharpenLuma(pOut, ow, oh, p->m_pDst->m_nCropSharpen, Tmp);
+			p->m_pDst->ProcessCropFrame(pOut, ow, oh, llPtsMs);
+		}
+		::InterlockedDecrement(&p->m_nBusy);
+	}
+}
+
 int CVideoDeviceDoc::CWatchdogThread::Work()
 {
 	ASSERT(m_pDoc);
@@ -3696,6 +3909,16 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 	m_llCurrentInitUpTime = m_llNextSnapshotUpTime;
 	m_bWatchDogVideoAlarm = FALSE;
 
+	// Crop camera
+	m_sCropSource = _T("");
+	m_sCropName = _T("");
+	m_nCropL = 0;
+	m_nCropT = 0;
+	m_nCropR = 10000;
+	m_nCropB = 10000;
+	m_nCropTargetWidth = 960;
+	m_nCropSharpen = 80;
+
 	// Networking
 	m_pVideoNetCom = NULL;
 	m_pHttpVideoParseProcess = NULL;
@@ -3862,6 +4085,9 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 
 CVideoDeviceDoc::~CVideoDeviceDoc()
 {
+	// Remove all the crop links (waits for the feeds in progress)
+	g_CropManager.Remove(this);
+
 	// Parsers always deleted after the related CNetCom objects!
 	if (m_pHttpVideoParseProcess)
 	{
@@ -4084,6 +4310,16 @@ CString CVideoDeviceDoc::GetDeviceName()
 
 	if (m_pDxCapture)
 		sDevice = m_pDxCapture->GetDeviceName();
+	else if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+	{
+		if (!m_sCropName.IsEmpty())
+			sDevice = m_sCropName;
+		else
+		{
+			sDevice = _T("crop") + (m_HttpGetFrameLocations.GetSize() > 0 ? m_HttpGetFrameLocations[0] : CString(_T("")));
+			sDevice.Replace(_T('/'), _T('_'));
+		}
+	}
 	else
 	{
 		sDevice.Format(_T("%s:%d"), m_sGetFrameVideoHost, m_nGetFrameVideoPort);
@@ -4109,6 +4345,8 @@ CString CVideoDeviceDoc::GetDeviceFormat()
 	CString sFormat;
 	if (m_pDxCapture)
 		sFormat = CDib::GetCompressionName((LPBITMAPINFO)&m_CaptureBMI).MakeLower();
+	else if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+		sFormat = _T("crop");
 	else if (m_pVideoNetCom)
 	{
 		if (m_pHttpVideoParseProcess)
@@ -5249,6 +5487,10 @@ BOOL CVideoDeviceDoc::OpenNetVideoDevice(CString sAddress)
 									m_nNetworkDeviceTypeMode))
 		return FALSE;
 
+	// Crop camera: the frames come from another camera, nothing to connect
+	if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+		return OpenCropDevice();
+
 	// Init http
 	if (m_nNetworkDeviceTypeMode < CVideoDeviceDoc::URL_RTSP)
 	{
@@ -5291,6 +5533,102 @@ BOOL CVideoDeviceDoc::OpenNetVideoDevice(CString sAddress)
 		ConnectRtsp();
 
 	return TRUE;
+}
+
+BOOL CVideoDeviceDoc::OpenCropDevice()
+{
+	CWinApp* pApp = ::AfxGetApp();
+	CString sPath(GetDevicePathName());
+
+	// Load the crop settings (written by CMainFrame::CreateCropCamera())
+	m_sCropSource = pApp->GetProfileString(sPath, _T("CropSource"), _T(""));
+	m_sCropName = pApp->GetProfileString(sPath, _T("CropName"), _T(""));
+	m_nCropL = (int)pApp->GetProfileInt(sPath, _T("CropL"), 0);
+	m_nCropT = (int)pApp->GetProfileInt(sPath, _T("CropT"), 0);
+	m_nCropR = (int)pApp->GetProfileInt(sPath, _T("CropR"), 10000);
+	m_nCropB = (int)pApp->GetProfileInt(sPath, _T("CropB"), 10000);
+	m_nCropTargetWidth = (int)pApp->GetProfileInt(sPath, _T("CropTargetWidth"), 960);	// 0 = no upscale
+	m_nCropSharpen = (int)pApp->GetProfileInt(sPath, _T("CropSharpen"), 80);				// 0 = off
+	if (m_sCropSource.IsEmpty()		||
+		m_nCropL < 0				||
+		m_nCropT < 0				||
+		m_nCropR > 10000			||
+		m_nCropB > 10000			||
+		m_nCropR <= m_nCropL		||
+		m_nCropB <= m_nCropT)
+		return FALSE;
+
+	// Load Settings
+	LoadSettings(DEFAULT_FRAMERATE, FALSE, sPath, GetDeviceName());
+	::SetTimer(GetView()->GetSafeHwnd(), ID_TIMER_RELOAD, RELOAD_TIMER_MS, NULL);
+
+	// Start Threads
+	if (!m_SaveFrameListThread.IsAlive())
+		m_SaveFrameListThread.Start();
+	if (!m_WatchdogThread.IsAlive())
+		m_WatchdogThread.Start();
+	if (!m_DeleteThread.IsAlive())
+		m_DeleteThread.Start(THREAD_PRIORITY_LOWEST);
+
+	// Reset vars
+	m_dwFrameCountUp = 0U;
+	m_llNextSnapshotUpTime = (LONGLONG)::GetTickCount64();
+	m_llCurrentInitUpTime = m_llNextSnapshotUpTime;
+
+	// Set the title, the frames will arrive when CMainFrame links us to the source camera
+	SetDocumentTitle();
+
+	return TRUE;
+}
+
+// Called from the thread of the source camera
+void CVideoDeviceDoc::ProcessCropFrame(LPBYTE pData, int nWidth, int nHeight, LONGLONG llPtsMs)
+{
+	if (m_bClosing || !pData || nWidth <= 0 || nHeight <= 0 || !GetView())
+		return;
+
+	// Init doc vars?
+	if (m_DocRect.right != nWidth || m_DocRect.bottom != nHeight)
+	{
+		m_ProcessFrameBMI.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		m_ProcessFrameBMI.bmiHeader.biWidth = (LONG)nWidth;
+		m_ProcessFrameBMI.bmiHeader.biHeight = (LONG)nHeight;
+		m_ProcessFrameBMI.bmiHeader.biPlanes = 1; // must be 1
+		m_ProcessFrameBMI.bmiHeader.biBitCount = 12;
+		m_ProcessFrameBMI.bmiHeader.biCompression = FCC('I420');
+		m_ProcessFrameBMI.bmiHeader.biSizeImage = (DWORD)(nWidth * nHeight * 3 / 2);
+		m_DocRect.right = m_ProcessFrameBMI.bmiHeader.biWidth;
+		m_DocRect.bottom = m_ProcessFrameBMI.bmiHeader.biHeight;
+
+		// Free Movement Detector because we changed size and/or format!
+		FreeMovementDetector();
+
+		// Update
+		if (m_bSizeToDoc)
+		{
+			::PostMessage(	GetView()->GetSafeHwnd(),
+							WM_THREADSAFE_UPDATEWINDOWSIZES,
+							(WPARAM)UPDATEWINDOWSIZES_SIZETODOC,
+							(LPARAM)0);
+			m_bSizeToDoc = FALSE;
+		}
+		else
+		{
+			::PostMessage(	GetView()->GetSafeHwnd(),
+							WM_THREADSAFE_UPDATEWINDOWSIZES,
+							(WPARAM)0,
+							(LPARAM)0);
+		}
+		::PostMessage(	GetView()->GetSafeHwnd(),
+						WM_THREADSAFE_SETDOCUMENTTITLE,
+						0, 0);
+		::PostMessage(	GetView()->GetSafeHwnd(),
+						WM_THREADSAFE_UPDATE_PHPPARAMS,
+						0, 0);
+	}
+
+	// Process
+	ProcessI420Frame(pData, m_ProcessFrameBMI.bmiHeader.biSizeImage, llPtsMs);
 }
 
 void CVideoDeviceDoc::OpenNetVideoDevice(CHostPortDlg* pDlg)
@@ -6942,8 +7280,8 @@ void CVideoDeviceDoc::AddFrameCount(CDib* pDib, const CString& sCount, int nRefF
 
 void CVideoDeviceDoc::AddNoDonationTag(CDib* pDib, int nRefFontSize)
 {
-	// Check
-	if (!pDib)
+	// Check (always return: the yellow "NO DONATION" tag is disabled)
+	if (!pDib || true)
 		return;
 
 	// Calc. rectangle
@@ -7623,6 +7961,9 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 			}
 		}
 
+		// Feed the crop cameras linked to us (frame already flipped, obscured and privacy masked)
+		g_CropManager.Feed(this, pDib->GetBits(), (int)pDib->GetWidth(), (int)pDib->GetHeight(), llPtsMs);
+
 		// Set Pts, Time and UpTime to Dib
 		pDib->SetPts(llPtsMs);
 		pDib->SetTime(CurrentUtcFileTime);
@@ -7747,7 +8088,7 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 				// First successful connection of a new network camera: search the network for other
 				// cameras and DVR channels (the main frame checks the user setting and starts the scan)
 				// (not for streams with a path: DVR channels opened together would each start a new scan)
-				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess &&
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && m_nNetworkDeviceTypeMode != CVideoDeviceDoc::CROP_CAMERA && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess &&
 					!(m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP && m_HttpGetFrameLocations.GetSize() > 0 && m_HttpGetFrameLocations[0].GetLength() > 1))
 				{
 					CAutoScanCtx* pAutoScanCtx = new CAutoScanCtx;

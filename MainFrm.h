@@ -64,6 +64,9 @@ extern "C"
 class CUImagerDoc;
 class CBatchProcDlg;
 class CDib;
+#ifdef VIDEODEVICEDOC
+class CVideoDeviceDoc;
+#endif
 
 class CMainFrame : public CMDIFrameWnd, public CTwain
 {
@@ -148,6 +151,17 @@ public:
 	// Log system usage
 	void LogSysUsage();
 
+#ifdef VIDEODEVICEDOC
+	// DVR mode: one big central camera + the other cameras small on the right
+	// (toggle with Ctrl+Shift+D, the choice is remembered)
+	void DvrToggle();
+	void DvrLayout();
+
+	// Crop cameras (virtual cameras fed with a region of another camera)
+	BOOL CreateCropCamera(CVideoDeviceDoc* pSrc, int nL, int nT, int nR, int nB);	// nL..nB: 1/10000 of the source frame
+	void CropResolveLinks();														// links the crop cameras to their source camera
+#endif
+
 // Overrides
 	// ClassWizard generated virtual function overrides
 	//{{AFX_VIRTUAL(CMainFrame)
@@ -208,6 +222,11 @@ protected:
 	CString m_sStatusBarString;
 	BOOL m_bLastNotificationWndDone;
 	CNotificationWnd* m_pNotificationWnd;
+#ifdef VIDEODEVICEDOC
+	BOOL m_bDvrMode;
+	HWND m_hDvrMain;
+	ULONGLONG m_ullDvrLastRotate;
+#endif
 
 	// Scan Vars
 	BOOL m_bScanAndEmail;
@@ -275,6 +294,7 @@ protected:
 	afx_msg LONG OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam);
 	afx_msg LONG OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnRecSpeedClick();
+	afx_msg void OnCropCamera();
 #else
 	afx_msg void OnXCoordinatesDoubleClick();
 	afx_msg void OnYCoordinatesDoubleClick();

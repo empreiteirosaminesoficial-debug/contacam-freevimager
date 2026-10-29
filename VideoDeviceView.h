@@ -23,6 +23,11 @@ public:
 	virtual ~CVideoDeviceView();
 	CVideoDeviceDoc* GetDocument();
 
+	// Crop camera selection: drag a rectangle on the image to create a crop camera
+	void CropSelectToggle();
+	void CropSelectEnd();
+	BOOL IsCropSelect() const {return m_bCropSelect;};
+
 protected:
 	DECLARE_DYNCREATE(CVideoDeviceView)
 	__forceinline void DrawRecDot(HDC hDC, const CRect& rcClient);
@@ -35,6 +40,11 @@ protected:
 	BOOL m_bMovDetUnsupportedVideoSize;
 	BOOL m_bMovDetUnsupportedZonesSize;
 	CVideoDeviceToolBar m_VideoDeviceToolBar;
+	BOOL m_bCropSelect;
+	BOOL m_bCropDragging;
+	CPoint m_ptCropStart;
+	CPoint m_ptCropEnd;
+	void DrawCropSelection(HDC hDC);
 
 // Overrides
 public:
@@ -61,6 +71,7 @@ protected:
 	afx_msg BOOL OnEraseBkgnd(CDC* pDC);
 	afx_msg void OnRButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnLButtonDown(UINT nFlags, CPoint point);
+	afx_msg void OnLButtonUp(UINT nFlags, CPoint point);
 	afx_msg void OnLButtonDblClk(UINT nFlags, CPoint point);
 	afx_msg void OnMButtonDown(UINT nFlags, CPoint point);
 	afx_msg void OnTimer(UINT nIDEvent);
