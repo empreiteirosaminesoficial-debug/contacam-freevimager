@@ -1006,7 +1006,10 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 {
 	CArray<DWORD, DWORD> aHosts;
 	for (DWORD dwIp = dwFirstIp; dwIp <= dwLastIp && dwIp >= dwFirstIp && aHosts.GetSize() < 1024; dwIp++)
-		aHosts.Add(dwIp);
+	{
+		if ((dwIp & 0xFF) != 0 && (dwIp & 0xFF) != 255) // network and broadcast addresses are skipped
+			aHosts.Add(dwIp);
+	}
 	const int nHostCount = (int)aHosts.GetSize();
 	const int nPortCount = (int)aPorts.GetSize();
 	if (nHostCount == 0 || nPortCount == 0 || nPortCount > 32)
@@ -1724,22 +1727,22 @@ void CCameraScanDlg::InitSpy()
 {
 	CWinApp* pApp = ::AfxGetApp();
 
-	// Network: the first local IPv4 address is the default
-	CString sBase = pApp->GetProfileString(_T("SpyDlg"), _T("Base"), _T(""));
-	if (sBase.IsEmpty())
+	// First and last IP (full addresses), the default is the range .1 to .100 of the first local network
+	CString sFrom = pApp->GetProfileString(_T("SpyDlg"), _T("FromIp"), _T(""));
+	CString sTo = pApp->GetProfileString(_T("SpyDlg"), _T("ToIp"), _T(""));
+	if (sFrom.IsEmpty() || sTo.IsEmpty())
 	{
 		CArray<DWORD, DWORD> aIps;
 		CArray<DWORD, DWORD> aMasks;
 		GetLocalIpv4(aIps, aMasks);
 		if (aIps.GetSize() > 0)
-			sBase.Format(_T("%u.%u.%u"), (aIps[0] >> 24) & 0xFF, (aIps[0] >> 16) & 0xFF, (aIps[0] >> 8) & 0xFF);
+		{
+			sFrom.Format(_T("%u.%u.%u.1"), (aIps[0] >> 24) & 0xFF, (aIps[0] >> 16) & 0xFF, (aIps[0] >> 8) & 0xFF);
+			sTo.Format(_T("%u.%u.%u.100"), (aIps[0] >> 24) & 0xFF, (aIps[0] >> 16) & 0xFF, (aIps[0] >> 8) & 0xFF);
+		}
 	}
-	GetDlgItem(IDC_SPY_BASE)->SetWindowText(sBase);
-	CString sNum;
-	sNum.Format(_T("%d"), pApp->GetProfileInt(_T("SpyDlg"), _T("From"), 1));
-	GetDlgItem(IDC_SPY_FROM)->SetWindowText(sNum);
-	sNum.Format(_T("%d"), pApp->GetProfileInt(_T("SpyDlg"), _T("To"), 100));
-	GetDlgItem(IDC_SPY_TO)->SetWindowText(sNum);
+	GetDlgItem(IDC_SPY_FROM)->SetWindowText(sFrom);
+	GetDlgItem(IDC_SPY_TO)->SetWindowText(sTo);
 	GetDlgItem(IDC_SPY_PORTS)->SetWindowText(pApp->GetProfileString(_T("SpyDlg"), _T("Ports"), _T("554, 10554, 8554, 5543, 5544, 555, 7070, 88, 8000")));
 
 	// Camera makers: the first entry is the automatic mode
@@ -1774,12 +1777,10 @@ void CCameraScanDlg::SaveSpySettings()
 {
 	CWinApp* pApp = ::AfxGetApp();
 	CString s;
-	GetDlgItem(IDC_SPY_BASE)->GetWindowText(s);
-	pApp->WriteProfileString(_T("SpyDlg"), _T("Base"), s);
 	GetDlgItem(IDC_SPY_FROM)->GetWindowText(s);
-	pApp->WriteProfileInt(_T("SpyDlg"), _T("From"), _ttoi(s));
+	pApp->WriteProfileString(_T("SpyDlg"), _T("FromIp"), s);
 	GetDlgItem(IDC_SPY_TO)->GetWindowText(s);
-	pApp->WriteProfileInt(_T("SpyDlg"), _T("To"), _ttoi(s));
+	pApp->WriteProfileString(_T("SpyDlg"), _T("ToIp"), s);
 	GetDlgItem(IDC_SPY_PORTS)->GetWindowText(s);
 	pApp->WriteProfileString(_T("SpyDlg"), _T("Ports"), s);
 	CComboBox* pMaker = (CComboBox*)GetDlgItem(IDC_SPY_MAKER);
@@ -1794,34 +1795,26 @@ void CCameraScanDlg::StartSpyScan()
 	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(m_sUser);
 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(m_sPass);
 
-	// Network, first and last host (last number of the IP)
-	CString sBase;
-	GetDlgItem(IDC_SPY_BASE)->GetWindowText(sBase);
-	int a = 0, b = 0, c = 0;
-	if (_stscanf_s(sBase, _T("%d.%d.%d"), &a, &b, &c) != 3 || a < 0 || a > 255 || b < 0 || b > 255 || c < 0 || c > 255)
+	// First and last IP, for example 192.168.1.0 to 192.168.1.10
+	CString sFrom, sTo;
+	GetDlgItem(IDC_SPY_FROM)->GetWindowText(sFrom);
+	GetDlgItem(IDC_SPY_TO)->GetWindowText(sTo);
+	sFrom.Trim();
+	sTo.Trim();
+	unsigned long ulFrom = ::inet_addr(CStringA(sFrom));
+	unsigned long ulTo = ::inet_addr(CStringA(sTo));
+	if (ulFrom == INADDR_NONE || ulTo == INADDR_NONE || ulFrom == 0 || ulTo == 0)
 	{
-		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Rede inv\u00e1lida: digite os 3 primeiros n\u00fameros, por exemplo 192.168.1"));
+		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("IP inv\u00e1lido: digite o IP completo, por exemplo 192.168.1.0 e 192.168.1.10"));
 		return;
 	}
-	CString sNum;
-	GetDlgItem(IDC_SPY_FROM)->GetWindowText(sNum);
-	int nFrom = _ttoi(sNum);
-	GetDlgItem(IDC_SPY_TO)->GetWindowText(sNum);
-	int nTo = _ttoi(sNum);
-	if (nFrom < 1)
-		nFrom = 1;
-	if (nTo > 254)
-		nTo = 254;
-	if (nFrom > nTo)
+	DWORD dwFrom = ntohl(ulFrom);
+	DWORD dwTo = ntohl(ulTo);
+	if (dwFrom > dwTo)
 	{
-		int nTmp = nFrom;
-		nFrom = nTo;
-		nTo = nTmp;
-	}
-	if (nFrom < 1 || nTo < 1)
-	{
-		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Intervalo de IPs inv\u00e1lido (1 a 254)."));
-		return;
+		DWORD dwTmp = dwFrom;
+		dwFrom = dwTo;
+		dwTo = dwTmp;
 	}
 
 	CScanJob* pJob = new CScanJob;
@@ -1829,8 +1822,8 @@ void CCameraScanDlg::StartSpyScan()
 	pJob->m_bLan = FALSE;
 	pJob->m_bDvr = FALSE;
 	pJob->m_nPort = RTSP_DEFAULT_PORT;
-	pJob->m_dwFirstIp = ((DWORD)a << 24) | ((DWORD)b << 16) | ((DWORD)c << 8) | (DWORD)nFrom;
-	pJob->m_dwLastIp = ((DWORD)a << 24) | ((DWORD)b << 16) | ((DWORD)c << 8) | (DWORD)nTo;
+	pJob->m_dwFirstIp = dwFrom;
+	pJob->m_dwLastIp = dwTo;
 	CString sPorts;
 	GetDlgItem(IDC_SPY_PORTS)->GetWindowText(sPorts);
 	if (!ParsePortList(sPorts, pJob->m_aPorts))

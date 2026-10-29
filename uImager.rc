@@ -1045,12 +1045,10 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTI
 CAPTION "Spy - procurar câmeras na rede"
 FONT 8, "MS Shell Dlg", 0, 0, 0x1
 BEGIN
-    LTEXT           "Rede (3 primeiros números)",IDC_STATIC,7,7,95,8
-    EDITTEXT        IDC_SPY_BASE,7,18,95,13,ES_AUTOHSCROLL
-    LTEXT           "IP de",IDC_STATIC,112,7,30,8
-    EDITTEXT        IDC_SPY_FROM,112,18,35,13,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "até",IDC_STATIC,157,7,30,8
-    EDITTEXT        IDC_SPY_TO,157,18,35,13,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "IP inicial (ex.: 192.168.1.0)",IDC_STATIC,7,7,150,8
+    EDITTEXT        IDC_SPY_FROM,7,18,150,13,ES_AUTOHSCROLL
+    LTEXT           "IP final (ex.: 192.168.1.10)",IDC_STATIC,173,7,150,8
+    EDITTEXT        IDC_SPY_TO,173,18,150,13,ES_AUTOHSCROLL
     LTEXT           "Portas (muda para a próxima se uma não funcionar)",IDC_STATIC,7,38,200,8
     EDITTEXT        IDC_SPY_PORTS,7,49,316,13,ES_AUTOHSCROLL
     LTEXT           "Marca / modelo",IDC_STATIC,7,69,100,8
