@@ -79,6 +79,7 @@ BEGIN_MESSAGE_MAP(CMainFrame, CMDIFrameWnd)
 	ON_MESSAGE(WM_THREADSAFE_AUTOSCAN_DONE, OnThreadSafeAutoScanDone)
 	ON_COMMAND(ID_INDICATOR_REC_SPEED, OnRecSpeedClick)
 	ON_COMMAND(ID_CROP_CAMERA, OnCropCamera)
+	ON_COMMAND(ID_SPY, OnSpy)
 #else
 	ON_COMMAND(ID_INDICATOR_XCOORDINATE, OnXCoordinatesDoubleClick)
 	ON_COMMAND(ID_INDICATOR_YCOORDINATE, OnYCoordinatesDoubleClick)
@@ -2225,6 +2226,13 @@ void CMainFrame::DvrLayout()
 									SWP_NOZORDER | SWP_NOACTIVATE);
 		}
 	}
+}
+
+// Spy: sweep an IP range looking for cameras
+void CMainFrame::OnSpy()
+{
+	CCameraScanDlg Dlg(this, IDD_SPY);
+	Dlg.DoModal();
 }
 
 // Start / stop the crop selection on the active camera

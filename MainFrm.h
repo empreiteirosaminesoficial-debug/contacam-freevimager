@@ -295,6 +295,7 @@ protected:
 	afx_msg LONG OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnRecSpeedClick();
 	afx_msg void OnCropCamera();
+	afx_msg void OnSpy();
 #else
 	afx_msg void OnXCoordinatesDoubleClick();
 	afx_msg void OnYCoordinatesDoubleClick();

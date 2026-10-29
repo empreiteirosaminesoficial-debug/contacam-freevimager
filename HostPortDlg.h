@@ -46,7 +46,8 @@ public:
 	static BOOL IsRunningQuiet(const CString& sHost, int nPort, int nDeviceTypeMode);
 	// Opens a RTSP camera, sUrl is the full rtsp:// url when the stream path is known.
 	// The login is saved for the camera. Returns FALSE if already running or on error
-	static BOOL OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass);
+	// nForceMode: camera maker list entry to use (-1 = from the url), nTransport: -1 keep, 0 UDP, 1 TCP (UDP retry)
+	static BOOL OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass, int nForceMode = -1, int nTransport = -1);
 	static BOOL SplitStreamUrl(const CString& sInUrl,
 							BOOL& bOutRtsp,
 							CString& sOutUser,

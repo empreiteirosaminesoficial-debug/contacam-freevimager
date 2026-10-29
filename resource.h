@@ -116,6 +116,7 @@
 #define IDI_EMF                         300
 #define IDD_CAMERABASICSETTINGS         304
 #define IDD_CAMERASCAN                  1503
+#define IDD_SPY                         1504
 #define IDD_RENAME                      305
 #define IDD_DELETE_CAM_FOLDERS          306
 #define IDD_PLATERECOGNIZER             307
@@ -3261,14 +3262,22 @@
 #define ID_CAPTURE_CHANGE_HOST          33556
 #define ID_BUTTON_PRINT_SETUP           58120
 
+#define IDC_SPY_BASE                    2612
+#define IDC_SPY_FROM                    2613
+#define IDC_SPY_TO                      2614
+#define IDC_SPY_PORTS                   2615
+#define IDC_SPY_MAKER                   2616
+#define IDC_SPY_TRANSPORT               2617
+#define ID_SPY                          33557
+
 // Next default values for new objects
 // 
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_3D_CONTROLS                     1
-#define _APS_NEXT_RESOURCE_VALUE        1504
-#define _APS_NEXT_COMMAND_VALUE         33557
-#define _APS_NEXT_CONTROL_VALUE         2612
+#define _APS_NEXT_RESOURCE_VALUE        1505
+#define _APS_NEXT_COMMAND_VALUE         33558
+#define _APS_NEXT_CONTROL_VALUE         2618
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

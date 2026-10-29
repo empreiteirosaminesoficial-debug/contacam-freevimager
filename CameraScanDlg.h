@@ -71,6 +71,18 @@ public:
 						const CString& sPass,
 						BOOL bReportSingleCamera = TRUE);
 
+	// Spy: sweeps the hosts dwFirstIp..dwLastIp (host byte order). On each host the ports of aPorts are
+	// tried in the given order, the next one is used when a port does not work. If nMakerMode is >= 0
+	// the camera maker list entry is used, otherwise the stream path is searched (automatic mode)
+	static void ScanRange(CScanSink& sink,
+						  DWORD dwFirstIp,
+						  DWORD dwLastIp,
+						  const CArray<int, int>& aPorts,
+						  int nMakerMode,
+						  const CString& sMakerName,
+						  const CString& sUser,
+						  const CString& sPass);
+
 	// Entry of the camera maker list that uses the given RTSP path, -1 if there is none
 	static int ModeFromRtspPath(const CString& sPath, CString* psMakerName = NULL);
 };
@@ -108,7 +120,7 @@ class CCameraScanDlg : public CDialog
 {
 // Construction
 public:
-	CCameraScanDlg(CWnd* pParent = NULL);
+	CCameraScanDlg(CWnd* pParent = NULL, UINT nIDTemplate = IDD_CAMERASCAN);
 	virtual ~CCameraScanDlg();
 
 // Input
@@ -119,6 +131,7 @@ public:
 	int m_nDvrPort;
 	BOOL m_bAutoScanLan;	// start scanning the network when the dialog opens
 	BOOL m_bAutoScanDvr;	// start enumerating the DVR channels when the dialog opens
+	BOOL m_bSpy;			// dialog IDD_SPY: sweep of an IP range with ports, maker and transport selection
 	CString m_sExcludeHost;	// this host is not reported by the network scan
 	CArray<CFoundCamera, const CFoundCamera&> m_Found;	// already known results
 
@@ -131,6 +144,10 @@ public:
 // Implementation
 protected:
 	void StartScan(BOOL bLan, BOOL bDvr);
+	void InitSpy();
+	void StartSpyScan();
+	void SaveSpySettings();
+	int m_nSpyTransport;	// -1 not used, 0 UDP, 1 TCP
 	void StopScan();
 	void AddItem(const CFoundCamera& cam);
 	void EnableDisableCtrls();

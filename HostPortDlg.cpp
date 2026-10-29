@@ -1303,7 +1303,7 @@ BOOL CHostPortDlg::IsRunningQuiet(const CString& sHost, int nPort, int nDeviceTy
 	return FALSE;
 }
 
-BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass)
+BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass, int nForceMode, int nTransport)
 {
 	// This object only carries the values to CVideoDeviceDoc::OpenNetVideoDevice(), it is never shown.
 	// When the stream path is known the full url is used as host, ParseUrl() splits it again
@@ -1330,6 +1330,12 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 			}
 		}
 	}
+	if (nForceMode >= 0)
+	{
+		Dlg.m_sHost = sHost;
+		Dlg.m_nPort = nPort;
+		Dlg.m_nDeviceTypeMode = nForceMode;
+	}
 	if (IsRunningQuiet(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode))
 		return FALSE;
 
@@ -1338,6 +1344,12 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 	CString sDevicePathName = MakeDevicePathName(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode);
 	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFrameUsernameExportable"), sUser);
 	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFramePasswordExportable"), sPass);
+	if (nTransport >= 0)
+	{
+		// TCP is tried first and, if the camera refuses it, UDP is used (see CRtspThread)
+		pApp->WriteProfileInt(sDevicePathName, _T("PreferTcpforRtsp"), nTransport ? 1 : 0);
+		pApp->WriteProfileInt(sDevicePathName, _T("UdpMulticastforRtsp"), 0);
+	}
 
 	// RTSP Transport is left at the default (both options unchecked = UDP). Some cameras, for example
 	// the Yoosee/Gwell ones, only connect this way. An already saved user choice is not overwritten
