@@ -7,6 +7,7 @@
 
 #include "ToolBarChildFrm.h"
 #include "uImagerView.h"
+#include <vector>
 #include "VideoDeviceDoc.h"
 
 // Window Message IDs
@@ -45,6 +46,10 @@ protected:
 	CPoint m_ptCropStart;
 	CPoint m_ptCropEnd;
 	void DrawCropSelection(HDC hDC);
+	// Enlarges the video with a bicubic interpolation when the window is clearly bigger than the video (full screen)
+	BOOL DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pDib);
+	struct SwsContext* m_pSmoothSws;
+	std::vector<BYTE> m_SmoothBuf;
 
 // Overrides
 public:

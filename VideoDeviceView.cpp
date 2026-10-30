@@ -8,6 +8,12 @@
 #include "DxCapture.h"
 #include "MyMemDC.h"
 
+// Defined in uImager.cpp
+SwsContext *sws_getCachedContextHelper(	struct SwsContext *context,
+										int srcW, int srcH, enum AVPixelFormat srcFormat,
+										int dstW, int dstH, enum AVPixelFormat dstFormat,
+										int flags);
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -78,11 +84,69 @@ CVideoDeviceView::CVideoDeviceView()
 	m_bCropDragging = FALSE;
 	m_ptCropStart = CPoint(0, 0);
 	m_ptCropEnd = CPoint(0, 0);
+	m_pSmoothSws = NULL;
 }
 
 CVideoDeviceView::~CVideoDeviceView()
 {
-	
+	if (m_pSmoothSws)
+	{
+		sws_freeContext(m_pSmoothSws);
+		m_pSmoothSws = NULL;
+	}
+}
+
+BOOL CVideoDeviceView::DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pDib)
+{
+	if (!pDib)
+		return FALSE;
+	const int nSrcW = (int)pDib->GetWidth();
+	const int nSrcH = (int)pDib->GetHeight();
+	const int nDstW = rcClient.Width();
+	const int nDstH = rcClient.Height();
+	LPBYTE pBits = pDib->GetBits();
+	if (!pBits || nSrcW < 2 || nSrcH < 2 || pDib->GetBitCount() != 32)
+		return FALSE;
+
+	// Only when the window is clearly bigger than the video (full screen)
+	if (nDstW * 10 < nSrcW * 13 && nDstH * 10 < nSrcH * 13)
+		return FALSE;
+	if (nDstW < 16 || nDstH < 16 || nDstW > 4096 || nDstH > 2304)
+		return FALSE;
+
+	m_pSmoothSws = sws_getCachedContextHelper(	m_pSmoothSws,
+												nSrcW, nSrcH, AV_PIX_FMT_BGRA,
+												nDstW, nDstH, AV_PIX_FMT_BGRA,
+												SWS_BICUBIC);
+	if (!m_pSmoothSws)
+		return FALSE;
+	size_t nSize = (size_t)nDstW * nDstH * 4;
+	if (m_SmoothBuf.size() != nSize)
+		m_SmoothBuf.resize(nSize);
+
+	// The DIB is bottom-up: read it from the last row with a negative stride
+	const uint8_t* srcData[4] = {pBits + (size_t)(nSrcH - 1) * nSrcW * 4, NULL, NULL, NULL};
+	int srcStride[4] = {-nSrcW * 4, 0, 0, 0};
+	uint8_t* dstData[4] = {&m_SmoothBuf[0], NULL, NULL, NULL};
+	int dstStride[4] = {nDstW * 4, 0, 0, 0};
+	if (sws_scale(m_pSmoothSws, srcData, srcStride, 0, nSrcH, dstData, dstStride) <= 0)
+		return FALSE;
+
+	BITMAPINFO Bmi;
+	memset(&Bmi, 0, sizeof(Bmi));
+	Bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	Bmi.bmiHeader.biWidth = nDstW;
+	Bmi.bmiHeader.biHeight = -nDstH; // top-down
+	Bmi.bmiHeader.biPlanes = 1;
+	Bmi.bmiHeader.biBitCount = 32;
+	Bmi.bmiHeader.biCompression = BI_RGB;
+	int nOldMode = ::SetStretchBltMode(hDC, COLORONCOLOR);
+	int nLines = ::StretchDIBits(hDC,
+								rcClient.left, rcClient.top, nDstW, nDstH,
+								0, 0, nDstW, nDstH,
+								&m_SmoothBuf[0], &Bmi, DIB_RGB_COLORS, SRCCOPY);
+	::SetStretchBltMode(hDC, nOldMode);
+	return (nLines > 0 && nLines != GDI_ERROR);
 }
 
 #ifdef _DEBUG
@@ -677,10 +741,13 @@ void CVideoDeviceView::OnDraw(CDC* pDC)
 		::EnterCriticalSection(&pDoc->m_csDib);
 
 		// Draw Frame
-		pDoc->m_pDrawDibRGB32->Paint(	MemDC.GetSafeHdc(),
-										&rcClient,
-										CRect(0, 0, pDoc->m_pDrawDibRGB32->GetWidth(), pDoc->m_pDrawDibRGB32->GetHeight()),
-										FALSE);
+		if (!DrawSmoothScaled(MemDC.GetSafeHdc(), rcClient, pDoc->m_pDrawDibRGB32))
+		{
+			pDoc->m_pDrawDibRGB32->Paint(	MemDC.GetSafeHdc(),
+											&rcClient,
+											CRect(0, 0, pDoc->m_pDrawDibRGB32->GetWidth(), pDoc->m_pDrawDibRGB32->GetHeight()),
+											FALSE);
+		}
 
 		// Leave CS
 		::LeaveCriticalSection(&pDoc->m_csDib);

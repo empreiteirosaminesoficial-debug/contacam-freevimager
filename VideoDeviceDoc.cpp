@@ -3475,6 +3475,13 @@ void CCropManager::Feed(CVideoDeviceDoc* pSrc, const BYTE* pI420, int nWidth, in
 					}
 				}
 			}
+			if (pOut == pDst)
+			{
+				// Log (a few times) why the crop has not been enlarged
+				static LONG lCropLogCount = 0;
+				if (::InterlockedIncrement(&lCropLogCount) <= 5)
+					::LogLine(_T("crop %dx%d not enlarged: CropTargetWidth=%d, sws=%s"), w, h, nTargetW, p->m_pSws ? _T("ok") : _T("failed or not used"));
+			}
 			if (pOut != pDst)
 				CropSharpenLuma(pOut, ow, oh, p->m_pDst->m_nCropSharpen, Tmp);
 			p->m_pDst->ProcessCropFrame(pOut, ow, oh, llPtsMs);
