@@ -49,6 +49,13 @@ protected:
 	// Enlarges the video with a bicubic interpolation when the window is clearly bigger than the video (full screen)
 	BOOL DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pDib);
 	struct SwsContext* m_pSmoothSws;
+
+	// Trash icon at the top right of the window: removes the camera
+	BOOL m_bMouseInside;
+	BOOL m_bTrashHot;
+	CRect GetTrashRect() const;
+	void DrawTrash(HDC hDC);
+	void RemoveThisCamera();
 	std::vector<BYTE> m_SmoothBuf;
 
 // Overrides
@@ -83,6 +90,7 @@ protected:
 	afx_msg void OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags);
 	afx_msg BOOL OnSetCursor(CWnd* pWnd, UINT nHitTest, UINT message);
 	afx_msg void OnMouseMove(UINT nFlags, CPoint point);
+	afx_msg LRESULT OnMouseLeave(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnEditActivateAllZones();
 	afx_msg void OnEditDeactivateAllZones();
 	afx_msg BOOL OnMouseWheel(UINT nFlags, short zDelta, CPoint pt);

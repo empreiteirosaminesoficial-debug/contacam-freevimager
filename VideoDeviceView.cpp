@@ -71,6 +71,7 @@ BEGIN_MESSAGE_MAP(CVideoDeviceView, CUImagerView)
 	ON_MESSAGE(WM_THREADSAFE_DVCHANGEVIDEOFORMAT, OnThreadSafeDVChangeVideoFormat)
 	ON_MESSAGE(WM_THREADSAFE_INIT_MOVDET, OnThreadSafeInitMovDet)
 	ON_MESSAGE(WM_DIRECTSHOW_GRAPHNOTIFY, OnDirectShowGraphNotify)
+	ON_MESSAGE(WM_MOUSELEAVE, OnMouseLeave)
 END_MESSAGE_MAP()
 
 	
@@ -85,6 +86,8 @@ CVideoDeviceView::CVideoDeviceView()
 	m_ptCropStart = CPoint(0, 0);
 	m_ptCropEnd = CPoint(0, 0);
 	m_pSmoothSws = NULL;
+	m_bMouseInside = FALSE;
+	m_bTrashHot = FALSE;
 }
 
 CVideoDeviceView::~CVideoDeviceView()
@@ -724,6 +727,66 @@ void CVideoDeviceView::OnLButtonUp(UINT nFlags, CPoint point)
 	CUImagerView::OnLButtonUp(nFlags, point);
 }
 
+// Trash icon (top right corner), shown when the mouse is over the camera window
+CRect CVideoDeviceView::GetTrashRect() const
+{
+	CRect rcClient;
+	GetClientRect(&rcClient);
+	const int nSize = 30;
+	return CRect(rcClient.right - nSize - 6, rcClient.top + 6, rcClient.right - 6, rcClient.top + 6 + nSize);
+}
+
+void CVideoDeviceView::DrawTrash(HDC hDC)
+{
+	CRect rc(GetTrashRect());
+	COLORREF crBack = m_bTrashHot ? RGB(200, 40, 40) : RGB(40, 40, 40);
+	HBRUSH hBrush = ::CreateSolidBrush(crBack);
+	HPEN hPen = ::CreatePen(PS_SOLID, 1, RGB(235, 235, 235));
+	HGDIOBJ hOldBrush = ::SelectObject(hDC, hBrush);
+	HGDIOBJ hOldPen = ::SelectObject(hDC, hPen);
+	::RoundRect(hDC, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+
+	// Lid, handle, body and slots of the trash can
+	int cx = rc.CenterPoint().x;
+	::MoveToEx(hDC, cx - 8, rc.top + 9, NULL);
+	::LineTo(hDC, cx + 9, rc.top + 9);
+	::MoveToEx(hDC, cx - 3, rc.top + 9, NULL);
+	::LineTo(hDC, cx - 3, rc.top + 6);
+	::LineTo(hDC, cx + 4, rc.top + 6);
+	::LineTo(hDC, cx + 4, rc.top + 9);
+	::MoveToEx(hDC, cx - 6, rc.top + 11, NULL);
+	::LineTo(hDC, cx - 5, rc.bottom - 6);
+	::LineTo(hDC, cx + 6, rc.bottom - 6);
+	::LineTo(hDC, cx + 7, rc.top + 11);
+	::MoveToEx(hDC, cx - 2, rc.top + 13, NULL);
+	::LineTo(hDC, cx - 2, rc.bottom - 8);
+	::MoveToEx(hDC, cx + 2, rc.top + 13, NULL);
+	::LineTo(hDC, cx + 2, rc.bottom - 8);
+
+	::SelectObject(hDC, hOldPen);
+	::SelectObject(hDC, hOldBrush);
+	::DeleteObject(hPen);
+	::DeleteObject(hBrush);
+}
+
+void CVideoDeviceView::RemoveThisCamera()
+{
+	CVideoDeviceDoc* pDoc = GetDocument();
+	ASSERT_VALID(pDoc);
+	CString sMsg;
+	sMsg.Format(_T("Excluir a c\u00e2mera \"%s\"?\n\nA c\u00e2mera ser\u00e1 fechada e a configura\u00e7\u00e3o dela removida. As grava\u00e7\u00f5es n\u00e3o s\u00e3o apagadas."), pDoc->GetAssignedDeviceName());
+	if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
+		::AfxGetMainFrame()->RemoveCamera(pDoc->GetDevicePathName(), pDoc->GetFrame());
+}
+
+LRESULT CVideoDeviceView::OnMouseLeave(WPARAM wparam, LPARAM lparam)
+{
+	m_bMouseInside = FALSE;
+	m_bTrashHot = FALSE;
+	Invalidate(FALSE);
+	return 0;
+}
+
 void CVideoDeviceView::OnDraw(CDC* pDC)
 {
 	CVideoDeviceDoc* pDoc = GetDocument();
@@ -835,6 +898,10 @@ void CVideoDeviceView::OnDraw(CDC* pDC)
 		MemDC.SetTextColor(crOldTextColor);
 		MemDC.SelectObject(pOldFont);
 	}
+
+	// Trash icon
+	if (m_bMouseInside && !m_bCropSelect)
+		DrawTrash(MemDC.GetSafeHdc());
 }
 
 void CVideoDeviceView::OnRButtonDown(UINT nFlags, CPoint point) 
@@ -905,6 +972,13 @@ void CVideoDeviceView::OnLButtonDown(UINT nFlags, CPoint point)
 	ASSERT_VALID(pDoc);
 
 	EnableCursor();
+
+	// Trash icon: remove the camera
+	if (m_bMouseInside && !m_bCropSelect && GetTrashRect().PtInRect(point))
+	{
+		RemoveThisCamera();
+		return;
+	}
 
 	// Crop selection: start dragging the rectangle
 	if (m_bCropSelect)
@@ -1220,6 +1294,25 @@ void CVideoDeviceView::OnMouseMove(UINT nFlags, CPoint point)
 {
 	CVideoDeviceDoc* pDoc = GetDocument();
 	ASSERT_VALID(pDoc);
+
+	// Trash icon hover
+	if (!m_bMouseInside)
+	{
+		TRACKMOUSEEVENT tme;
+		memset(&tme, 0, sizeof(tme));
+		tme.cbSize = sizeof(tme);
+		tme.dwFlags = TME_LEAVE;
+		tme.hwndTrack = m_hWnd;
+		::TrackMouseEvent(&tme);
+		m_bMouseInside = TRUE;
+		Invalidate(FALSE);
+	}
+	BOOL bTrashHot = GetTrashRect().PtInRect(point);
+	if (bTrashHot != m_bTrashHot)
+	{
+		m_bTrashHot = bTrashHot;
+		Invalidate(FALSE);
+	}
 
 	// Crop selection: update the rectangle
 	if (m_bCropSelect)

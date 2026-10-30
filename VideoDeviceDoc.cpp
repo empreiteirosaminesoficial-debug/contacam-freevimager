@@ -3497,6 +3497,8 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 	// Init vars
 	LONGLONG llLastHttpReconnectUpTime = -HTTP_CONNECTION_TIMEOUT_SEC * 1000; // set it so that the first reconnect is triggered without waiting
 	BOOL bDeviceAlert = FALSE;
+	LONGLONG llNotConnectedSince = 0;	// start of the time without connection of a network camera
+	BOOL bAutoFixTriggered = FALSE;
 
 	// Watch
 	for (;;)
@@ -3514,6 +3516,37 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 				// Current times
 				LONGLONG llCurrentUpTime = (LONGLONG)::GetTickCount64();
 				CTime CurrentTime = CTime::GetCurrentTime();
+
+				// A network camera (RTSP) that does not connect for 2 minutes: the Spy looks on the
+				// same address (local network only) for the right port and stream path
+				{
+					BOOL bNetCam = (!m_pDoc->m_pDxCapture													&&
+									!m_pDoc->m_sGetFrameVideoHost.IsEmpty()									&&
+									m_pDoc->m_nNetworkDeviceTypeMode >= CVideoDeviceDoc::URL_RTSP			&&
+									m_pDoc->m_nNetworkDeviceTypeMode != CVideoDeviceDoc::CROP_CAMERA		&&
+									!((CUImagerApp*)::AfxGetApp())->m_bServiceProcess);
+					BOOL bConnected = (m_pDoc->m_bCaptureStarted && !m_pDoc->m_bWatchDogVideoAlarm);
+					if (!bNetCam || bConnected)
+					{
+						llNotConnectedSince = 0;
+						bAutoFixTriggered = FALSE;
+					}
+					else if (llNotConnectedSince == 0)
+						llNotConnectedSince = llCurrentUpTime;
+					else if (!bAutoFixTriggered && (llCurrentUpTime - llNotConnectedSince) >= 120000)
+					{
+						bAutoFixTriggered = TRUE;
+						CAutoFixCtx* pAutoFixCtx = new CAutoFixCtx;
+						pAutoFixCtx->m_sDevicePathName = m_pDoc->GetDevicePathName();
+						pAutoFixCtx->m_sHost = m_pDoc->m_sGetFrameVideoHost;
+						pAutoFixCtx->m_nOldPort = (int)m_pDoc->m_nGetFrameVideoPort;
+						pAutoFixCtx->m_nOldMode = (int)m_pDoc->m_nNetworkDeviceTypeMode;
+						pAutoFixCtx->m_sUser = m_pDoc->m_sHttpGetFrameUsername;
+						pAutoFixCtx->m_sPass = m_pDoc->m_sHttpGetFramePassword;
+						if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 0, (LPARAM)pAutoFixCtx))
+							delete pAutoFixCtx;
+					}
+				}
 
 				// Video watchdog
 				LONGLONG llMsSinceLastProcessFrame = llCurrentUpTime - m_pDoc->m_llCurrentInitUpTime;

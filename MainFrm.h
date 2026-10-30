@@ -27,6 +27,7 @@ extern "C"
 #define WM_SCANANDEMAIL								WM_USER + 102
 #define WM_TRAY_NOTIFICATION						WM_USER + 103
 #ifdef VIDEODEVICEDOC
+#define WM_REMOVE_CAMERA_CONFIG						(WM_USER + 790)
 #define WM_AUTORUN_VIDEODEVICES						WM_USER + 104
 #endif
 														
@@ -159,6 +160,10 @@ public:
 
 	// Crop cameras (virtual cameras fed with a region of another camera)
 	BOOL CreateCropCamera(CVideoDeviceDoc* pSrc, int nL, int nT, int nR, int nB);	// nL..nB: 1/10000 of the source frame
+
+	// Closes a camera and, when it is closed, removes its configuration and autorun entry
+	// (the recordings are not deleted)
+	void RemoveCamera(const CString& sDevicePathName, CWnd* pFrame);
 	void CropResolveLinks();														// links the crop cameras to their source camera
 #endif
 
@@ -224,6 +229,7 @@ protected:
 	CNotificationWnd* m_pNotificationWnd;
 #ifdef VIDEODEVICEDOC
 	BOOL m_bDvrMode;
+	int m_nDvrStyle;		// 0 = big camera + column on the right, 1 = "L": big camera + small squares at the right and bottom
 	HWND m_hDvrMain;
 	ULONGLONG m_ullDvrLastRotate;
 #endif
@@ -293,6 +299,9 @@ protected:
 	afx_msg LONG OnAutorunVideoDevices(WPARAM wparam, LPARAM lparam);
 	afx_msg LONG OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam);
 	afx_msg LONG OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoFixStart(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnRemoveCameraConfig(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnRecSpeedClick();
 	afx_msg void OnCropCamera();
 	afx_msg void OnSpy();

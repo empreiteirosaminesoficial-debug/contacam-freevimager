@@ -1355,6 +1355,50 @@ void StartAutoScan(CAutoScanCtx* pCtx)
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// Spy after 2 minutes without connection
+
+// Only addresses of the local network are scanned
+static BOOL IsPrivateIpv4(const CString& sHost, DWORD& dwIp)
+{
+	unsigned long ulAddr = ::inet_addr(CStringA(sHost));
+	if (ulAddr == INADDR_NONE || ulAddr == 0)
+		return FALSE;
+	dwIp = ntohl(ulAddr);
+	int a = (int)((dwIp >> 24) & 0xFF);
+	int b = (int)((dwIp >> 16) & 0xFF);
+	return (a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168) || (a == 169 && b == 254));
+}
+
+static UINT AutoFixThreadProc(LPVOID pParam)
+{
+	CAutoFixCtx* pCtx = (CAutoFixCtx*)pParam;
+	DWORD dwIp = 0;
+	if (IsPrivateIpv4(pCtx->m_sHost, dwIp))
+	{
+		// The port of the camera first, then the usual ones
+		static const int DEFAULT_PORTS[] = { 554, 10554, 8554, 5543, 5544, 555, 7070, 88, 8000 };
+		CArray<int, int> aPorts;
+		if (pCtx->m_nOldPort > 0 && pCtx->m_nOldPort <= 65535)
+			aPorts.Add(pCtx->m_nOldPort);
+		for (int i = 0; i < (int)(sizeof(DEFAULT_PORTS) / sizeof(DEFAULT_PORTS[0])); i++)
+		{
+			if (DEFAULT_PORTS[i] != pCtx->m_nOldPort)
+				aPorts.Add(DEFAULT_PORTS[i]);
+		}
+		CCameraScanner::ScanRange(*pCtx, dwIp, dwIp, aPorts, -1, CString(), pCtx->m_sUser, pCtx->m_sPass);
+	}
+	if (!pCtx->m_hNotify || !::PostMessage(pCtx->m_hNotify, WM_THREADSAFE_AUTOFIX_DONE, 0, (LPARAM)pCtx))
+		delete pCtx;
+	return 0;
+}
+
+void StartAutoFix(CAutoFixCtx* pCtx)
+{
+	if (!::AfxBeginThread(AutoFixThreadProc, pCtx, THREAD_PRIORITY_BELOW_NORMAL))
+		delete pCtx;
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // Scan thread of the dialog
 
 class CDlgScanSink : public CScanSink

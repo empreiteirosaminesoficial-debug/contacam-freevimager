@@ -13,6 +13,8 @@
 // Posted to the main frame, lParam = CAutoScanCtx* (ownership is passed)
 #define WM_THREADSAFE_AUTOSCAN_START	WM_USER + 760
 #define WM_THREADSAFE_AUTOSCAN_DONE		WM_USER + 761
+#define WM_THREADSAFE_AUTOFIX_START		(WM_USER + 762)
+#define WM_THREADSAFE_AUTOFIX_DONE		(WM_USER + 763)
 
 /////////////////////////////////////////////////////////////////////////////
 // One camera (or one DVR channel) found by the scanner
@@ -112,6 +114,35 @@ public:
 };
 
 void StartAutoScan(CAutoScanCtx* pCtx); // deletes pCtx if the thread cannot be started
+
+/////////////////////////////////////////////////////////////////////////////
+// A network camera that does not connect for 2 minutes: the Spy looks for the
+// right port and stream path on the same (local network) address. Allocate with
+// new and pass it to StartAutoFix(), the ownership goes to the thread and then to
+// the main frame which receives it with WM_THREADSAFE_AUTOFIX_DONE (and deletes it)
+
+class CAutoFixCtx : public CScanSink
+{
+public:
+	CAutoFixCtx() { m_nOldPort = 0; m_nOldMode = -1; m_hNotify = NULL; m_bCancel = FALSE; m_bFound = FALSE; };
+	virtual void OnFound(const CFoundCamera& cam) { if (!m_bFound && !cam.m_sUrl.IsEmpty()) { m_Result = cam; m_bFound = TRUE; } };
+	virtual void OnStatus(const CString& sStatus) { ; };
+	virtual BOOL IsCancelled() { return m_bCancel; };
+	virtual DWORD GetBatchDelayMs() { return 150; };
+
+	CString m_sDevicePathName;	// the camera that does not connect
+	CString m_sHost;
+	int m_nOldPort;
+	int m_nOldMode;
+	CString m_sUser;
+	CString m_sPass;
+	HWND m_hNotify;
+	volatile BOOL m_bCancel;
+	BOOL m_bFound;
+	CFoundCamera m_Result;
+};
+
+void StartAutoFix(CAutoFixCtx* pCtx); // deletes pCtx if the thread cannot be started
 
 /////////////////////////////////////////////////////////////////////////////
 // CCameraScanDlg dialog
