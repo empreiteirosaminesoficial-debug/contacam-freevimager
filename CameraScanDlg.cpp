@@ -995,6 +995,178 @@ void CCameraScanner::ScanLan(	CScanSink& sink,
 	sink.OnStatus(sDone);
 }
 
+// Maker from the text a device gives about itself (HTTP Server header / page title, UPnP SERVER)
+static CString BrandFromBanner(const CStringA& sText)
+{
+	static const struct { const char* pszKey; const char* pszBrand; } BRANDS[] =
+	{
+		{ "hikvision", "Hikvision" }, { "dnvrs-webs", "Hikvision" }, { "app-webs", "Hikvision" },
+		{ "dahua", "Dahua" }, { "intelbras", "Intelbras" }, { "amcrest", "Amcrest" },
+		{ "axis", "Axis" }, { "foscam", "Foscam" }, { "reolink", "Reolink" },
+		{ "tp-link", "TP-Link / Tapo" }, { "tapo", "TP-Link / Tapo" }, { "vivotek", "Vivotek" },
+		{ "uniview", "Uniview" }, { "yoosee", "Yoosee/Gwell" }, { "gwell", "Yoosee/Gwell" },
+		{ "sony", "Sony" }, { "panasonic", "Panasonic" }, { "samsung", "Samsung / Hanwha" }, { "hanwha", "Samsung / Hanwha" },
+		{ "bosch", "Bosch" }, { "avtech", "AVTech" }, { "geovision", "GeoVision" }, { "tiandy", "Tiandy" },
+		{ "uc-httpd", "Xiongmai (XMeye)" }, { "xmeye", "Xiongmai (XMeye)" }, { "jaws", "Xiongmai (XMeye)" },
+		{ "goahead", "generica (GoAhead)" }, { "ip camera", "camera IP generica" },
+		{ "ipcam", "camera IP generica" }, { "netcam", "camera IP generica" }, { "dvr", "DVR/NVR" }, { "nvr", "DVR/NVR" }
+	};
+	CStringA sLower(sText);
+	sLower.MakeLower();
+	for (int i = 0; i < (int)(sizeof(BRANDS) / sizeof(BRANDS[0])); i++)
+	{
+		if (sLower.Find(BRANDS[i].pszKey) >= 0)
+			return CString(BRANDS[i].pszBrand);
+	}
+	return CString();
+}
+
+// Value of a header line (e.g. "server") of an HTTP / SSDP message
+static CStringA GetHeaderValue(const CStringA& sMsg, const char* pszName)
+{
+	CStringA sLower(sMsg);
+	sLower.MakeLower();
+	CStringA sKey;
+	sKey.Format("\r\n%s:", pszName);
+	int nPos = sLower.Find(sKey);
+	if (nPos < 0)
+		return CStringA();
+	int nStart = nPos + sKey.GetLength();
+	int nEnd = sMsg.Find("\r\n", nStart);
+	CStringA sValue(sMsg.Mid(nStart, (nEnd >= 0 ? nEnd : sMsg.GetLength()) - nStart));
+	sValue.Trim();
+	return sValue;
+}
+
+// Web page of the camera: Server header and title tell the maker when RTSP does not
+static CString WebFingerprint(const SOCKADDR_STORAGE& addr, int nAddrLen, const CString& sHost, int nPort, CString& sBrand)
+{
+	CStringA sAnswer;
+	if (HttpGetSimple(addr, nAddrLen, nPort, sHost, _T("/"), sAnswer) <= 0)
+		return CString();
+	CStringA sServer(GetHeaderValue(sAnswer, "server"));
+	CStringA sTitle;
+	CStringA sLowerAnswer(sAnswer);
+	sLowerAnswer.MakeLower();
+	int nT1 = sLowerAnswer.Find("<title>");
+	int nT2 = (nT1 >= 0) ? sLowerAnswer.Find("</title>", nT1) : -1;
+	if (nT1 >= 0 && nT2 > nT1 && nT2 - nT1 < 120)
+	{
+		sTitle = sAnswer.Mid(nT1 + 7, nT2 - nT1 - 7);
+		sTitle.Trim();
+	}
+	sBrand = BrandFromBanner(sServer + " " + sTitle);
+	CString sInfo;
+	if (!sServer.IsEmpty())
+		sInfo = _T("servidor web: ") + CString(sServer);
+	if (!sTitle.IsEmpty())
+		sInfo += (sInfo.IsEmpty() ? _T("") : _T(", ")) + CString(_T("p\u00e1gina: ")) + CString(sTitle);
+	return sInfo;
+}
+
+// SSDP/UPnP (UDP 1900) and mDNS (UDP 5353, _rtsp._tcp and _onvif._tcp): devices of the local network
+// announce themselves. mapInfo: host -> text. Only devices that look like cameras are kept.
+static void UdpDiscovery(CScanSink& sink, CMapStringToString& mapInfo)
+{
+	CArray<DWORD, DWORD> aIps;
+	CArray<DWORD, DWORD> aMasks;
+	GetLocalIpv4(aIps, aMasks);
+	if (aIps.GetSize() == 0)
+		return;
+	SOCKET s = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (s == INVALID_SOCKET)
+		return;
+	SOCKADDR_IN local;
+	memset(&local, 0, sizeof(local));
+	local.sin_family = AF_INET;
+	local.sin_addr.s_addr = htonl(INADDR_ANY);
+	::bind(s, (sockaddr*)&local, sizeof(local));
+	int nTtl = 2;
+	::setsockopt(s, IPPROTO_IP, IP_MULTICAST_TTL, (const char*)&nTtl, sizeof(nTtl));
+
+	static const char SSDP[] =	"M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n"
+								"MAN: \"ssdp:discover\"\r\nMX: 1\r\nST: upnp:rootdevice\r\n\r\n";
+	// mDNS query, "QU" bit set so the answer comes back by unicast
+	static const char MDNS_RTSP[] =		"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+										"\x05_rtsp\x04_tcp\x05local\x00\x00\x0c\x80\x01";
+	static const char MDNS_ONVIF[] =	"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+										"\x06_onvif\x04_tcp\x05local\x00\x00\x0c\x80\x01";
+	SOCKADDR_IN ssdp, mdns;
+	memset(&ssdp, 0, sizeof(ssdp));
+	ssdp.sin_family = AF_INET;
+	ssdp.sin_port = htons(1900);
+	ssdp.sin_addr.s_addr = inet_addr("239.255.255.250");
+	mdns = ssdp;
+	mdns.sin_port = htons(5353);
+	mdns.sin_addr.s_addr = inet_addr("224.0.0.251");
+	for (int i = 0; i < aIps.GetSize(); i++)
+	{
+		IN_ADDR ifc;
+		ifc.s_addr = htonl(aIps[i]);
+		::setsockopt(s, IPPROTO_IP, IP_MULTICAST_IF, (const char*)&ifc, sizeof(ifc));
+		::sendto(s, SSDP, (int)strlen(SSDP), 0, (sockaddr*)&ssdp, sizeof(ssdp));
+		::sendto(s, MDNS_RTSP, (int)sizeof(MDNS_RTSP) - 1, 0, (sockaddr*)&mdns, sizeof(mdns));
+		::sendto(s, MDNS_ONVIF, (int)sizeof(MDNS_ONVIF) - 1, 0, (sockaddr*)&mdns, sizeof(mdns));
+	}
+
+	DWORD dwStart = ::GetTickCount();
+	while (!sink.IsCancelled())
+	{
+		DWORD dwElapsed = ::GetTickCount() - dwStart;
+		if (dwElapsed >= 2000)
+			break;
+		fd_set rfds;
+		FD_ZERO(&rfds);
+		FD_SET(s, &rfds);
+		timeval tv;
+		tv.tv_sec = 0;
+		tv.tv_usec = (long)((2000 - dwElapsed) * 1000);
+		if (::select(0, &rfds, NULL, NULL, &tv) <= 0)
+			break;
+		char buf[2048];
+		SOCKADDR_IN from;
+		int nFromLen = sizeof(from);
+		int nRead = ::recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &nFromLen);
+		if (nRead <= 0)
+			continue;
+		CString sHost(IpToString(ntohl(from.sin_addr.s_addr)));
+		CStringA sMsg(buf, nRead);
+		CString sNew;
+		if (sMsg.Left(5) == "HTTP/")
+		{
+			// UPnP: keep only what looks like a camera
+			CStringA sServer(GetHeaderValue(sMsg, "server"));
+			CString sBrand(BrandFromBanner(sServer));
+			if (!sBrand.IsEmpty() && sBrand != _T("DVR/NVR"))
+				sNew = _T("UPnP: ") + CString(sServer);
+		}
+		else if (nRead > 12 && (((BYTE)buf[2]) & 0x80)) // mDNS answer
+		{
+			// printable name of the service (e.g. "camera-sala._rtsp._tcp.local")
+			CString sName;
+			for (int k = 12; k < nRead && k < 120; k++)
+			{
+				BYTE b = (BYTE)buf[k];
+				sName += (b >= 32 && b < 127) ? (TCHAR)b : (TCHAR)' ';
+			}
+			if (sName.Find(_T("_rtsp")) >= 0 || sName.Find(_T("_onvif")) >= 0)
+				sNew = _T("mDNS (_rtsp/_onvif)");
+		}
+		if (!sNew.IsEmpty())
+		{
+			CString sOld;
+			if (mapInfo.Lookup(sHost, sOld))
+			{
+				if (sOld.Find(sNew) < 0)
+					mapInfo[sHost] = sOld + _T(", ") + sNew;
+			}
+			else
+				mapInfo[sHost] = sNew;
+		}
+	}
+	::closesocket(s);
+}
+
 void CCameraScanner::ScanRange(	CScanSink& sink,
 								DWORD dwFirstIp,
 								DWORD dwLastIp,
@@ -1123,6 +1295,12 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 			::Sleep(sink.GetBatchDelayMs());
 	}
 
+	// Cameras announcing themselves (UPnP, mDNS)
+	CMapStringToString mapNet;
+	sink.OnStatus(_T("Procurando an\u00fancios UPnP e mDNS..."));
+	UdpDiscovery(sink, mapNet);
+	CMapStringToString mapReported;
+
 	// On each host with open ports use the first port (in the given order) that works
 	int nFound = 0;
 	for (int nHost = 0; nHost < nHostCount; nHost++)
@@ -1180,10 +1358,49 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 			}
 			else
 				cam.m_sInfo = sUser.IsEmpty() ? _T("login necess\u00e1rio") : _T("login recusado");
+			// Web page and announcements of the same host: maker and model
+			for (int w = 0; w < nPortCount; w++)
+			{
+				int nWeb = aPorts[w];
+				if (!(aOpenMask[nHost] & ((DWORD)1 << w)) || !(nWeb == 80 || nWeb == 81 || nWeb == 88 || nWeb == 8000 || nWeb == 8080 || nWeb == 8899))
+					continue;
+				CString sBrand;
+				CString sWeb(WebFingerprint(addr, nAddrLen, sHost, nWeb, sBrand));
+				if (!sWeb.IsEmpty())
+				{
+					cam.m_sInfo += _T(", ") + sWeb;
+					if (cam.m_sMaker.IsEmpty() && !sBrand.IsEmpty())
+					{
+						cam.m_sMaker = sBrand;
+						cam.m_sInfo += _T(", fabricante: ") + sBrand;
+					}
+					break;
+				}
+			}
+			CString sNet;
+			if (mapNet.Lookup(sHost, sNet))
+				cam.m_sInfo += _T(", ") + sNet;
+			mapReported[sHost] = _T("1");
 			sink.OnFound(cam);
 			nFound++;
 			break;
 		}
+	}
+
+	// Announced cameras of the range whose RTSP port was not found
+	for (int nH = 0; nH < nHostCount; nH++)
+	{
+		CString sHost(IpToString(aHosts[nH]));
+		CString sNet, sDummy;
+		if (!mapNet.Lookup(sHost, sNet) || mapReported.Lookup(sHost, sDummy))
+			continue;
+		CFoundCamera cam;
+		cam.m_sHost = sHost;
+		cam.m_nPort = RTSP_DEFAULT_PORT;
+		cam.m_sType = _T("UPnP/mDNS");
+		cam.m_sInfo = sNet + _T(", porta RTSP n\u00e3o detectada (tente outras portas ou o fabricante)");
+		sink.OnFound(cam);
+		nFound++;
 	}
 
 	CString sDone;
