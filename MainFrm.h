@@ -229,7 +229,16 @@ protected:
 	CNotificationWnd* m_pNotificationWnd;
 #ifdef VIDEODEVICEDOC
 	BOOL m_bDvrMode;
-	int m_nDvrStyle;		// 0 = big camera + column on the right, 1 = "L": big camera + small squares at the right and bottom
+	int m_nDvrStyle;		// 0 = big camera + column on the right, 1 = "L": big camera + small squares at the right and bottom, 2 = equal grid (all cameras the same size, like Intelbras/NVR viewers)
+	void DvrSetStyle(int nStyle);	// from the Window menu: turns DVR mode on with this style, or off if it is already on with it
+	afx_msg void OnDvrOff();
+	afx_msg void OnDvrColumn();
+	afx_msg void OnDvrL();
+	afx_msg void OnDvrGrid();
+	afx_msg void OnUpdateDvrOff(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrColumn(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrL(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrGrid(CCmdUI* pCmdUI);
 	HWND m_hDvrMain;
 	ULONGLONG m_ullDvrLastRotate;
 #endif

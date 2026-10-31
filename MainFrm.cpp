@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <math.h>
 #include "uImager.h"
 #include "PictureDoc.h"
 #include "VideoDeviceDoc.h"
@@ -84,6 +85,16 @@ BEGIN_MESSAGE_MAP(CMainFrame, CMDIFrameWnd)
 	ON_COMMAND(ID_INDICATOR_REC_SPEED, OnRecSpeedClick)
 	ON_COMMAND(ID_CROP_CAMERA, OnCropCamera)
 	ON_COMMAND(ID_SPY, OnSpy)
+#ifdef VIDEODEVICEDOC
+	ON_COMMAND(ID_DVR_OFF, OnDvrOff)
+	ON_COMMAND(ID_DVR_COLUMN, OnDvrColumn)
+	ON_COMMAND(ID_DVR_L, OnDvrL)
+	ON_COMMAND(ID_DVR_GRID, OnDvrGrid)
+	ON_UPDATE_COMMAND_UI(ID_DVR_OFF, OnUpdateDvrOff)
+	ON_UPDATE_COMMAND_UI(ID_DVR_COLUMN, OnUpdateDvrColumn)
+	ON_UPDATE_COMMAND_UI(ID_DVR_L, OnUpdateDvrL)
+	ON_UPDATE_COMMAND_UI(ID_DVR_GRID, OnUpdateDvrGrid)
+#endif
 #else
 	ON_COMMAND(ID_INDICATOR_XCOORDINATE, OnXCoordinatesDoubleClick)
 	ON_COMMAND(ID_INDICATOR_YCOORDINATE, OnYCoordinatesDoubleClick)
@@ -118,7 +129,7 @@ CMainFrame::CMainFrame() : m_TrayIcon(IDR_TRAYICON) // Menu ID
 	{
 		int nDvr = ::AfxGetApp()->GetProfileInt(_T("General"), _T("DvrMode"), 0);
 		m_bDvrMode = (nDvr != 0);
-		m_nDvrStyle = (nDvr == 2) ? 1 : 0;
+		m_nDvrStyle = (nDvr > 0) ? (nDvr - 1) : 0;
 	}
 	m_hDvrMain = NULL;
 	m_ullDvrLastRotate = 0ULL;
@@ -2139,23 +2150,55 @@ void CMainFrame::UpdateDetectionMaxMaxFrames()
 
 void CMainFrame::DvrToggle()
 {
-	// Ctrl+Shift+D cycles: off -> big camera + right column -> "L" layout -> off
+	// Ctrl+Shift+D cycles: off -> big camera + right column -> "L" layout -> equal grid -> off
 	if (!m_bDvrMode)
 	{
 		m_bDvrMode = TRUE;
 		m_nDvrStyle = 0;
 	}
-	else if (m_nDvrStyle == 0)
-		m_nDvrStyle = 1;
+	else if (m_nDvrStyle < 2)
+		m_nDvrStyle++;
 	else
 		m_bDvrMode = FALSE;
-	::AfxGetApp()->WriteProfileInt(_T("General"), _T("DvrMode"), !m_bDvrMode ? 0 : (m_nDvrStyle ? 2 : 1));
+	::AfxGetApp()->WriteProfileInt(_T("General"), _T("DvrMode"), !m_bDvrMode ? 0 : (m_nDvrStyle + 1));
 	if (m_bDvrMode)
 	{
 		m_hDvrMain = NULL;
 		m_ullDvrLastRotate = ::GetTickCount64();
 		DvrLayout();
 	}
+}
+
+// From the "Modo DVR" submenu: ID_DVR_OFF/ID_DVR_COLUMN/ID_DVR_L/ID_DVR_GRID
+void CMainFrame::OnDvrOff() { DvrSetStyle(-1); }
+void CMainFrame::OnDvrColumn() { DvrSetStyle(0); }
+void CMainFrame::OnDvrL() { DvrSetStyle(1); }
+void CMainFrame::OnDvrGrid() { DvrSetStyle(2); }
+void CMainFrame::OnUpdateDvrOff(CCmdUI* pCmdUI) { pCmdUI->SetCheck(!m_bDvrMode); }
+void CMainFrame::OnUpdateDvrColumn(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 0); }
+void CMainFrame::OnUpdateDvrL(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 1); }
+void CMainFrame::OnUpdateDvrGrid(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 2); }
+
+void CMainFrame::DvrSetStyle(int nStyle)
+{
+	if (nStyle < 0)
+		m_bDvrMode = FALSE;
+	else if (m_bDvrMode && m_nDvrStyle == nStyle)
+		m_bDvrMode = FALSE;	// clicking the active style again turns DVR mode off
+	else
+	{
+		m_bDvrMode = TRUE;
+		m_nDvrStyle = nStyle;
+	}
+	::AfxGetApp()->WriteProfileInt(_T("General"), _T("DvrMode"), !m_bDvrMode ? 0 : (m_nDvrStyle + 1));
+	if (m_bDvrMode)
+	{
+		m_hDvrMain = NULL;
+		m_ullDvrLastRotate = ::GetTickCount64();
+	}
+	DvrLayout();
+	if (!m_bDvrMode && m_hWndMDIClient)
+		::SendMessage(m_hWndMDIClient, WM_MDICASCADE, 0, 0);
 }
 
 void CMainFrame::DvrLayout()
@@ -2223,7 +2266,7 @@ void CMainFrame::DvrLayout()
 	// right column (full height) + bottom row
 	int nS = 0, nCr = 0, nCb = 0;
 	if (m_nDvrStyle == 1 && n > 1)
-{
+	{
 		int W = rcMDI.Width(), H = rcMDI.Height();
 		for (nS = min(W, H) / 2 ; nS >= 24 ; nS -= 4)
 		{
@@ -2239,10 +2282,35 @@ void CMainFrame::DvrLayout()
 			nCb = max(1, (W - nS) / nS);
 		}
 	}
+
+	// Equal grid (like the Intelbras/NVR viewers): same-size squares for every camera, the
+	// fewest columns/rows that fit them all, with the last row centered when it is not full
+	int nGridCols = 0, nGridRows = 0;
+	if (m_nDvrStyle == 2 && n > 0)
+	{
+		nGridCols = (int)ceil(sqrt((double)n));
+		nGridRows = (nGridCols > 0) ? (n + nGridCols - 1) / nGridCols : 1;
+		while (nGridCols > 1 && (nGridCols - 1) * nGridRows >= n)
+			nGridCols--;	// drop empty columns the square root rounding may have added
+	}
+
 	for (i = 0 ; i < n ; i++)
 	{
 		CRect rcNew;
-		if (m_nDvrStyle == 1 && n > 1)
+		if (m_nDvrStyle == 2 && n > 0)
+		{
+			int W = rcMDI.Width(), H = rcMDI.Height();
+			int nRow = i / nGridCols;
+			int nCol = i % nGridCols;
+			int nInThisRow = min(nGridCols, n - nRow * nGridCols);
+			int nRowW = W * nInThisRow / nGridCols;	// last row keeps the same cell size, just shorter
+			int nOffsetX = (W - nRowW) / 2;
+			rcNew = CRect(	nOffsetX + nCol * W / nGridCols,
+							nRow * H / nGridRows,
+							nOffsetX + (nCol + 1) * W / nGridCols,
+							(nRow + 1) * H / nGridRows);
+		}
+		else if (m_nDvrStyle == 1 && n > 1)
 		{
 			int W = rcMDI.Width(), H = rcMDI.Height();
 			int nRight = min(nThumbs, nCr);

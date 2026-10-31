@@ -198,6 +198,14 @@ BEGIN
         MENUITEM "&Cascade",                    ID_WINDOW_CASCADE
         MENUITEM "Tile &Horizontally",          ID_WINDOW_TILE_HORZ
         MENUITEM "&Tile Vertically",            ID_WINDOW_TILE_VERT
+        MENUITEM SEPARATOR
+        POPUP "Modo DVR"
+        BEGIN
+            MENUITEM "Desligado",                   ID_DVR_OFF
+            MENUITEM "C\u00e2mera grande + coluna",     ID_DVR_COLUMN
+            MENUITEM "C\u00e2mera grande + quadrados (L)", ID_DVR_L
+            MENUITEM "Grade (quadrados iguais)",    ID_DVR_GRID
+        END
     END
     POPUP "&Help"
     BEGIN
