@@ -63,7 +63,45 @@ static const LPCTSTR RTSP_PATHS[] =
 	_T("/profile1/media.smp"),
 	_T("/MediaInput/h264"),
 	_T("/axis-media/media.amp"),
-	_T("/ch01.264")
+	_T("/ch01.264"),
+	// More makers (national OEMs mostly use the Dahua, Hikvision, Xiongmai and Hisilicon paths)
+	_T("/user=admin_password=_channel=1_stream=0.sdp?real_stream"),	// Xiongmai / XMeye / Hisilicon OEM, empty password
+	_T("/user=admin&password=&channel=1&stream=0.sdp?real_stream"),
+	_T("/cam/realmonitor?channel=1&subtype=1"),	// Dahua / Intelbras / Giga / Amcrest sub stream
+	_T("/h264/ch1/main/av_stream"),				// Hikvision old / Honeywell / Swann
+	_T("/Streaming/Channels/102"),				// Hikvision / Ezviz sub stream
+	_T("/Streaming/Channels/1"),
+	_T("/Preview_01_main"),						// Reolink
+	_T("/h265Preview_01_main"),					// Reolink H.265
+	_T("/stream2"),								// TP-Link Tapo sub stream
+	_T("/tcp/av0_0"),							// VStarcam
+	_T("/live/av0"),
+	_T("/av0_0"),
+	_T("/live0"),								// Eufy
+	_T("/live/ch1"),
+	_T("/live/main"),
+	_T("/live.sdp"),								// Vivotek
+	_T("/media/video1"),							// Sony
+	_T("/profile2/media.smp"),					// Samsung / Hanwha
+	_T("/h264.sdp"),								// Arecont
+	_T("/CH001.sdp"),							// GeoVision
+	_T("/ipcam.sdp"),							// Edimax
+	_T("/play1.sdp"),							// D-Link / TrendNet
+	_T("/live2.sdp"),
+	_T("/channel1"),								// Brickcom
+	_T("/video.mp4"),							// Zavio
+	_T("/mpeg4/media.amp"),						// Axis old
+	_T("/nphMpeg4/g726-640x480"),				// Panasonic old
+	_T("/PSIA/Streaming/channels/1"),			// PSIA (Hikvision OEM)
+	_T("/rtsp_tunnel"),							// TVT / generic DVR
+	_T("/video0"),
+	_T("/mjpeg/1"),
+	_T("/0"),
+	_T("/main"),
+	_T("/sub"),
+	_T("/ch0_0.h264"),							// generic Chinese OEM
+	_T("/ch1/main/av_stream"),
+	_T("/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif")
 };
 static const int RTSP_PATHS_COUNT = sizeof(RTSP_PATHS) / sizeof(RTSP_PATHS[0]);
 
@@ -114,8 +152,59 @@ static const CMakerPath MAKER_PATHS[] =
 };
 static const int MAKER_PATHS_COUNT = sizeof(MAKER_PATHS) / sizeof(MAKER_PATHS[0]);
 
+// Makers recognized by the stream path (the stream is opened with the generic URL mode)
+struct CPathBrand
+{
+	LPCTSTR m_sPath;
+	LPCTSTR m_sName;
+};
+static const CPathBrand PATH_BRANDS[] =
+{
+	{ _T("/user=admin_password=_channel=1_stream=0.sdp?real_stream"),	_T("Xiongmai / XMeye / Hisilicon (OEM)") },
+	{ _T("/user=admin&password=&channel=1&stream=0.sdp?real_stream"),	_T("Xiongmai / XMeye / Hisilicon (OEM)") },
+	{ _T("/cam/realmonitor?channel=1&subtype=1"),						_T("Dahua / Intelbras / Giga / Amcrest (sub stream)") },
+	{ _T("/h264/ch1/main/av_stream"),									_T("Hikvision old / Honeywell / Swann") },
+	{ _T("/Streaming/Channels/102"),									_T("Hikvision / Ezviz (sub stream)") },
+	{ _T("/Streaming/Channels/1"),										_T("Hikvision / Ezviz") },
+	{ _T("/Preview_01_main"),											_T("Reolink") },
+	{ _T("/h265Preview_01_main"),										_T("Reolink H.265") },
+	{ _T("/stream2"),													_T("TP-Link Tapo (sub stream)") },
+	{ _T("/tcp/av0_0"),													_T("VStarcam") },
+	{ _T("/live/av0"),													_T("Generic OEM (/live/av0)") },
+	{ _T("/av0_0"),														_T("Generic OEM (/av0_0)") },
+	{ _T("/live0"),														_T("Eufy") },
+	{ _T("/live/ch1"),													_T("Generic OEM (/live/ch1)") },
+	{ _T("/live/main"),													_T("Sercomm / Generic OEM") },
+	{ _T("/live.sdp"),													_T("Vivotek") },
+	{ _T("/media/video1"),												_T("Sony") },
+	{ _T("/profile2/media.smp"),										_T("Samsung / Hanwha") },
+	{ _T("/h264.sdp"),													_T("Arecont") },
+	{ _T("/CH001.sdp"),													_T("GeoVision") },
+	{ _T("/ipcam.sdp"),													_T("Edimax") },
+	{ _T("/play1.sdp"),													_T("D-Link / TrendNet") },
+	{ _T("/live2.sdp"),													_T("D-Link") },
+	{ _T("/channel1"),													_T("Brickcom") },
+	{ _T("/video.mp4"),													_T("Zavio") },
+	{ _T("/mpeg4/media.amp"),											_T("Axis (old)") },
+	{ _T("/PSIA/Streaming/channels/1"),									_T("PSIA (Hikvision OEM)") },
+	{ _T("/rtsp_tunnel"),												_T("TVT / Generic DVR") },
+	{ _T("/ch0_0.h264"),												_T("Generic OEM (ch0_0.h264)") },
+	{ _T("/ch1/main/av_stream"),										_T("Generic OEM (ch1/main)") },
+	{ _T("/cam/realmonitor?channel=1&subtype=0&unicast=true&proto=Onvif"),	_T("Dahua / Intelbras (ONVIF)") }
+};
+static const int PATH_BRANDS_COUNT = sizeof(PATH_BRANDS) / sizeof(PATH_BRANDS[0]);
+
 int CCameraScanner::ModeFromRtspPath(const CString& sPath, CString* psMakerName)
 {
+	for (int i = 0; i < PATH_BRANDS_COUNT; i++)
+	{
+		if (sPath.CompareNoCase(PATH_BRANDS[i].m_sPath) == 0)
+		{
+			if (psMakerName)
+				*psMakerName = PATH_BRANDS[i].m_sName;
+			break;
+		}
+	}
 	for (int i = 0; i < MAKER_PATHS_COUNT; i++)
 	{
 		if (sPath.CompareNoCase(MAKER_PATHS[i].m_sPath) == 0)
@@ -1005,6 +1094,9 @@ static CString BrandFromBanner(const CStringA& sText)
 		{ "axis", "Axis" }, { "foscam", "Foscam" }, { "reolink", "Reolink" },
 		{ "tp-link", "TP-Link / Tapo" }, { "tapo", "TP-Link / Tapo" }, { "vivotek", "Vivotek" },
 		{ "uniview", "Uniview" }, { "yoosee", "Yoosee/Gwell" }, { "gwell", "Yoosee/Gwell" },
+		{ "giga", "Giga Security" }, { "multilaser", "Multilaser" }, { "elsys", "Elsys" }, { "tecvoz", "Tecvoz" }, { "luatek", "Luatek" },
+		{ "jfl", "JFL" }, { "vizzion", "Vizzion" }, { "vstarcam", "VStarcam" }, { "sricam", "Sricam" }, { "wanscam", "Wanscam" }, { "ezviz", "Ezviz" },
+		{ "hipcam", "Hisilicon OEM" }, { "tvt", "TVT" }, { "mobotix", "Mobotix" }, { "lorex", "Lorex" }, { "swann", "Swann" }, { "annke", "Annke" },
 		{ "sony", "Sony" }, { "panasonic", "Panasonic" }, { "samsung", "Samsung / Hanwha" }, { "hanwha", "Samsung / Hanwha" },
 		{ "bosch", "Bosch" }, { "avtech", "AVTech" }, { "geovision", "GeoVision" }, { "tiandy", "Tiandy" },
 		{ "uc-httpd", "Xiongmai (XMeye)" }, { "xmeye", "Xiongmai (XMeye)" }, { "jaws", "Xiongmai (XMeye)" },
