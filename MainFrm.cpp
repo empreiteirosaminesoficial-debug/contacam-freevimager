@@ -2420,7 +2420,9 @@ LONG CMainFrame::OnThreadSafeAutoFixStart(WPARAM wparam, LPARAM lparam)
 	CAutoFixCtx* pCtx = (CAutoFixCtx*)lparam;
 	if (pCtx)
 	{
-		if (::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoSpyUnconnected"), 1))
+		// wparam != 0: the person clicked the camera's Spy button, always runs. wparam == 0: the
+		// 2-minutes automatic trigger, only runs when that setting is on
+		if (wparam != 0 || ::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoSpyUnconnected"), 1))
 		{
 			pCtx->m_hNotify = GetSafeHwnd();
 			StartAutoFix(pCtx); // the ownership passes to the scan thread
@@ -2441,7 +2443,13 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 	{
 		const CFoundCamera& cam = pCtx->m_Result;
 		BOOL bSame = (cam.m_nPort == pCtx->m_nOldPort && (cam.m_nMode < 0 || cam.m_nMode == pCtx->m_nOldMode));
-		if (!bSame)
+		if (!bSame && pCtx->m_bSilentApply)
+		{
+			// The person clicked the Spy button on purpose: apply right away, no question asked
+			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, 1))
+				RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
+		}
+		else if (!bSame)
 		{
 			CString sMsg;
 			sMsg.Format(_T("A c\u00e2mera \"%s\" n\u00e3o conectou em 2 minutos.\n\nO Spy encontrou uma configura\u00e7\u00e3o que responde:\n%s\n\nAplicar? A c\u00e2mera antiga ser\u00e1 fechada e removida (as grava\u00e7\u00f5es n\u00e3o s\u00e3o apagadas) e a nova ser\u00e1 aberta."),
@@ -2453,6 +2461,15 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 					RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
 			}
 		}
+		else if (pCtx->m_bSilentApply)
+		{
+			// Same config already active: let the person know nothing needed to change
+			::AfxMessageBox(_T("O Spy n\u00e3o encontrou uma configura\u00e7\u00e3o diferente da atual para essa c\u00e2mera."), MB_OK | MB_ICONINFORMATION);
+		}
+	}
+	else if (!pCtx->m_bFound && pCtx->m_bSilentApply && pOld)
+	{
+		::AfxMessageBox(_T("O Spy n\u00e3o encontrou nenhuma configura\u00e7\u00e3o que respondesse para essa c\u00e2mera."), MB_OK | MB_ICONINFORMATION);
 	}
 	delete pCtx;
 	return 0;

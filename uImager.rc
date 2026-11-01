@@ -3424,6 +3424,8 @@ BEGIN
     ID_EDIT_DEACTIVATE_ALLZONES "Deactivate all zones\nDeactivate All Zones"
     ID_CAPTURE_NETWORK      "Network / IP camera\nNetwork / IP Camera"
     ID_CAPTURE_RECORD       "Recording\nRecording"
+    ID_CAPTURE_SPY          "Procura a porta/protocolo certo desta c\u00e2mera agora e aplica sem perguntar\nSpy"
+    ID_CAPTURE_DELETE_CAMERA "Excluir esta c\u00e2mera\nExcluir c\u00e2mera"
     ID_VIEW_ALL_NEXT_PICTURE 
                             "Show next image of all open documents\nAll Next Image"
     ID_VIEW_ALL_PREVIOUS_PICTURE 

@@ -3273,6 +3273,8 @@
 #define ID_DVR_COLUMN                   33559
 #define ID_DVR_L                        33560
 #define ID_DVR_GRID                     33561
+#define ID_CAPTURE_SPY                  33562
+#define ID_CAPTURE_DELETE_CAMERA        33563
 
 // Next default values for new objects
 // 
@@ -3280,7 +3282,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_3D_CONTROLS                     1
 #define _APS_NEXT_RESOURCE_VALUE        1505
-#define _APS_NEXT_COMMAND_VALUE         33562
+#define _APS_NEXT_COMMAND_VALUE         33564
 #define _APS_NEXT_CONTROL_VALUE         2618
 #define _APS_NEXT_SYMED_VALUE           101
 #endif

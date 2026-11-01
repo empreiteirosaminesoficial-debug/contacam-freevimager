@@ -1071,6 +1071,10 @@ protected:
 	afx_msg void OnUpdateCaptureCameraSettings(CCmdUI* pCmdUI);
 	afx_msg void OnUpdateEditFrameStamp(CCmdUI* pCmdUI);
 	afx_msg void OnUpdateCaptureRecord(CCmdUI* pCmdUI);
+	afx_msg void OnCaptureSpy();			// Spy toolbar button: runs now, applies what it finds without asking
+	afx_msg void OnUpdateCaptureSpy(CCmdUI* pCmdUI);
+	afx_msg void OnCaptureDeleteCamera();	// trash toolbar button: same as the Spy window's Remove Camera
+	afx_msg void OnUpdateCaptureDeleteCamera(CCmdUI* pCmdUI);
 	afx_msg void OnMovDetSensitivity0();
 	afx_msg void OnUpdateMovDetSensitivity0(CCmdUI* pCmdUI);
 	afx_msg void OnMovDetSensitivity5();

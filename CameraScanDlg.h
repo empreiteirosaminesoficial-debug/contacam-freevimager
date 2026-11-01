@@ -124,7 +124,7 @@ void StartAutoScan(CAutoScanCtx* pCtx); // deletes pCtx if the thread cannot be 
 class CAutoFixCtx : public CScanSink
 {
 public:
-	CAutoFixCtx() { m_nOldPort = 0; m_nOldMode = -1; m_hNotify = NULL; m_bCancel = FALSE; m_bFound = FALSE; };
+	CAutoFixCtx() { m_nOldPort = 0; m_nOldMode = -1; m_hNotify = NULL; m_bCancel = FALSE; m_bFound = FALSE; m_bSilentApply = FALSE; };
 	virtual void OnFound(const CFoundCamera& cam) { if (!m_bFound && !cam.m_sUrl.IsEmpty()) { m_Result = cam; m_bFound = TRUE; } };
 	virtual void OnStatus(const CString& sStatus) { ; };
 	virtual BOOL IsCancelled() { return m_bCancel; };
@@ -140,6 +140,7 @@ public:
 	volatile BOOL m_bCancel;
 	BOOL m_bFound;
 	CFoundCamera m_Result;
+	BOOL m_bSilentApply;	// from the camera's Spy toolbar button: apply what is found without asking, and ignore the "automatic Spy" on/off setting
 };
 
 void StartAutoFix(CAutoFixCtx* pCtx); // deletes pCtx if the thread cannot be started

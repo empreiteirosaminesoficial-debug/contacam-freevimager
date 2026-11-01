@@ -57,6 +57,10 @@ BEGIN_MESSAGE_MAP(CVideoDeviceDoc, CUImagerDoc)
 	ON_UPDATE_COMMAND_UI(ID_CAPTURE_CAMERASETTINGS, OnUpdateCaptureCameraSettings)
 	ON_UPDATE_COMMAND_UI(ID_EDIT_FRAMESTAMP, OnUpdateEditFrameStamp)
 	ON_UPDATE_COMMAND_UI(ID_CAPTURE_RECORD, OnUpdateCaptureRecord)
+	ON_COMMAND(ID_CAPTURE_SPY, OnCaptureSpy)
+	ON_UPDATE_COMMAND_UI(ID_CAPTURE_SPY, OnUpdateCaptureSpy)
+	ON_COMMAND(ID_CAPTURE_DELETE_CAMERA, OnCaptureDeleteCamera)
+	ON_UPDATE_COMMAND_UI(ID_CAPTURE_DELETE_CAMERA, OnUpdateCaptureDeleteCamera)
 	ON_COMMAND(ID_SENSITIVITY_0, OnMovDetSensitivity0)
 	ON_UPDATE_COMMAND_UI(ID_SENSITIVITY_0, OnUpdateMovDetSensitivity0)
 	ON_COMMAND(ID_SENSITIVITY_5, OnMovDetSensitivity5)
@@ -5761,6 +5765,44 @@ void CVideoDeviceDoc::OnUpdateCaptureRecord(CCmdUI* pCmdUI)
 	//       CVideoDeviceChildFrame::OnToolbarDropDown() is responsible for the menu popup
 	pCmdUI->Enable();
 	pCmdUI->SetCheck(m_nDetectionLevel != 0 ? 1 : 0);
+}
+
+// Spy toolbar button: runs the Spy on this camera's address right away, and if it finds a working
+// configuration, applies it without asking (the 2-minutes automatic Spy still asks, this one does not
+// because the person clicked the button on purpose)
+void CVideoDeviceDoc::OnCaptureSpy()
+{
+	if (m_pDxCapture || m_sGetFrameVideoHost.IsEmpty())
+		return;
+	CAutoFixCtx* pCtx = new CAutoFixCtx;
+	pCtx->m_sDevicePathName = GetDevicePathName();
+	pCtx->m_sHost = m_sGetFrameVideoHost;
+	pCtx->m_nOldPort = (int)m_nGetFrameVideoPort;
+	pCtx->m_nOldMode = (int)m_nNetworkDeviceTypeMode;
+	pCtx->m_sUser = m_sHttpGetFrameUsername;
+	pCtx->m_sPass = m_sHttpGetFramePassword;
+	pCtx->m_bSilentApply = TRUE;
+	if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 1, (LPARAM)pCtx))
+		delete pCtx;
+}
+
+void CVideoDeviceDoc::OnUpdateCaptureSpy(CCmdUI* pCmdUI)
+{
+	pCmdUI->Enable(!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty());
+}
+
+// Trash toolbar button: same removal as the trash icon that used to float over the video
+void CVideoDeviceDoc::OnCaptureDeleteCamera()
+{
+	CString sMsg;
+	sMsg.Format(_T("Excluir a c\u00e2mera \"%s\"?\n\nA c\u00e2mera ser\u00e1 fechada e a configura\u00e7\u00e3o dela removida. As grava\u00e7\u00f5es n\u00e3o s\u00e3o apagadas."), GetAssignedDeviceName());
+	if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
+		::AfxGetMainFrame()->RemoveCamera(GetDevicePathName(), GetFrame());
+}
+
+void CVideoDeviceDoc::OnUpdateCaptureDeleteCamera(CCmdUI* pCmdUI)
+{
+	pCmdUI->Enable();
 }
 
 void CVideoDeviceDoc::OnMovDetSensitivity0()
