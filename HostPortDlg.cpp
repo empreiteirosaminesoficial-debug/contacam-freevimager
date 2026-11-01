@@ -4,6 +4,7 @@
 #include "stdafx.h"
 #include "uimager.h"
 #include "HostPortDlg.h"
+#include "CameraScanDlg.h"
 #include "VideoDeviceDoc.h"
 #include "ToolBarChildFrm.h"
 #include "SortableStringArray.h" // for the CompareNatural() function
@@ -49,6 +50,10 @@ BEGIN_MESSAGE_MAP(CHostPortDlg, CDialog)
 	ON_BN_CLICKED(IDC_CHECK_PREFER_TCP_FOR_RTSP, OnCheckPreferTcpforRtsp)
 	ON_BN_CLICKED(IDC_CHECK_UDP_MULTICAST_FOR_RTSP, OnCheckUdpMulticastforRtsp)
 	ON_BN_CLICKED(IDC_BUTTON_HELP, OnButtonHelp)
+	ON_BN_CLICKED(IDC_BUTTON_FILL_FROM_URL, OnButtonFillFromUrl)
+	ON_BN_CLICKED(IDC_BUTTON_SCAN_PORTS, OnButtonScanPorts)
+	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_LAN, OnButtonOpenScanLan)
+	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_DVR, OnButtonOpenScanDvr)
 	//}}AFX_MSG_MAP
 END_MESSAGE_MAP()
 
@@ -302,6 +307,9 @@ BOOL CHostPortDlg::OnInitDialog()
 	CUImagerApp::RichEditCtrlAppendText(pRichEditHttpPorts, _T(", 88"), ::GetSysColor(COLOR_WINDOWTEXT));
 
 	// Update Controls
+	// Search other cameras after the first successful connection of a new camera
+	((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->SetCheck(::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1) ? 1 : 0);
+
 	EnableDisableCtrls();
 	LoadSettings();
 
@@ -719,6 +727,7 @@ void CHostPortDlg::OnOK()
 	pApp->WriteProfileString(sSection, _T("HostHistory0"), m_sHost);
 	pApp->WriteProfileInt(sSection, _T("PortHistory0"), m_nPort);
 	pApp->WriteProfileInt(sSection, _T("DeviceTypeModeHistory0"), m_nDeviceTypeMode);
+	pApp->WriteProfileInt(sSection, _T("AutoScanOtherCameras"), ((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->GetCheck() ? 1 : 0);
 
 	// Save Username, Password, PreferTcpforRtsp and UdpMulticastforRtsp flags
 	// for the device given by m_sHost, m_nPort, m_nDeviceTypeMode
@@ -874,6 +883,503 @@ void CHostPortDlg::SaveSettings()
 	// UDP Multicast for Rtsp
 	pCheck = (CButton*)GetDlgItem(IDC_CHECK_UDP_MULTICAST_FOR_RTSP);
 	((CUImagerApp*)::AfxGetApp())->WriteProfileInt(sDevicePathName, _T("UdpMulticastforRtsp"), pCheck->GetCheck());
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// Stream URL auto fill and port scan
+
+// Splits rtsp://user:password@host:port/path?query or http://user:password@host:port/path
+// User name and password are url decoded, an IPv6 host is returned without the brackets.
+BOOL CHostPortDlg::SplitStreamUrl(	const CString& sInUrl,
+									BOOL& bOutRtsp,
+									CString& sOutUser,
+									CString& sOutPass,
+									CString& sOutHost,
+									int& nOutPort,
+									CString& sOutLocation)
+{
+	CString sUrl(sInUrl);
+	sUrl.Trim();
+	CString sLowerCase(sUrl);
+	sLowerCase.MakeLower();
+	sOutUser.Empty();
+	sOutPass.Empty();
+	sOutHost.Empty();
+	sOutLocation = _T("/");
+	if (sLowerCase.Left(7) == _T("rtsp://"))
+	{
+		bOutRtsp = TRUE;
+		nOutPort = RTSP_DEFAULT_PORT;
+	}
+	else if (sLowerCase.Left(7) == _T("http://"))
+	{
+		bOutRtsp = FALSE;
+		nOutPort = HTTP_DEFAULT_PORT;
+	}
+	else
+		return FALSE;
+
+	// Authority and location
+	CString sAuthority(sUrl.Mid(7));
+	int nPos = sAuthority.Find(_T('/'));
+	if (nPos >= 0)
+	{
+		sOutLocation = sAuthority.Mid(nPos);
+		sAuthority = sAuthority.Left(nPos);
+	}
+
+	// Credentials
+	nPos = sAuthority.ReverseFind(_T('@'));
+	if (nPos >= 0)
+	{
+		CString sCredentials(sAuthority.Left(nPos));
+		sAuthority = sAuthority.Mid(nPos + 1);
+		int nColon = sCredentials.Find(_T(':'));
+		if (nColon >= 0)
+		{
+			sOutUser = ::UrlDecode(sCredentials.Left(nColon));
+			sOutPass = ::UrlDecode(sCredentials.Mid(nColon + 1));
+		}
+		else
+			sOutUser = ::UrlDecode(sCredentials);
+	}
+
+	// Host and port
+	CString sPort;
+	if (sAuthority.Left(1) == _T("["))
+	{
+		int nEnd = sAuthority.Find(_T(']'));
+		if (nEnd < 0)
+			return FALSE;
+		sOutHost = sAuthority.Mid(1, nEnd - 1);
+		if (sAuthority.Mid(nEnd + 1, 1) == _T(":"))
+			sPort = sAuthority.Mid(nEnd + 2);
+	}
+	else
+	{
+		nPos = sAuthority.Find(_T(':'));
+		if (nPos >= 0)
+		{
+			sOutHost = sAuthority.Left(nPos);
+			sPort = sAuthority.Mid(nPos + 1);
+		}
+		else
+			sOutHost = sAuthority;
+	}
+	sPort.Trim();
+	if (!sPort.IsEmpty())
+	{
+		TCHAR* pEnd = NULL;
+		long nPortValue = _tcstol(sPort, &pEnd, 10);
+		if (pEnd == NULL || *pEnd != _T('\0') || nPortValue <= 0 || nPortValue > 65535) // Port 0 is Reserved
+			return FALSE;
+		nOutPort = (int)nPortValue;
+	}
+	sOutHost.Trim();
+	return !sOutHost.IsEmpty();
+}
+
+void CHostPortDlg::OnButtonFillFromUrl()
+{
+	CString sStreamUrl;
+	GetDlgItem(IDC_EDIT_STREAM_URL)->GetWindowText(sStreamUrl);
+
+	BOOL bRtsp;
+	CString sUser, sPass, sHost, sLocation;
+	int nPort;
+	if (!SplitStreamUrl(sStreamUrl, bRtsp, sUser, sPass, sHost, nPort, sLocation))
+	{
+		::AlertUser(GetSafeHwnd());
+		::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, _T("Enter a stream URL starting with rtsp:// or http://, for example rtsp://user:password@192.168.1.10:554/stream1"), 0);
+		GetDlgItem(IDC_EDIT_STREAM_URL)->SetFocus();
+		return;
+	}
+
+	// Known generic RTSP paths are mapped to the Camera Maker and Protocol list,
+	// all the other urls are kept as full url in the host field
+	// (ParseUrl() and MakeUrl() already handle that case)
+	CString sNewHost;
+	int nNewMode;
+	if (bRtsp)
+	{
+		CString sPath(sLocation);
+		sPath.MakeLower();
+		BOOL bKnownPath = TRUE;
+		nNewMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+		if (sPath == _T("/11"))
+			nNewMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+		else if (sPath == _T("/onvif1"))
+			nNewMode = CVideoDeviceDoc::GENERIC_2_RTSP;
+		else if (sPath == _T("/live/ch0"))
+			nNewMode = CVideoDeviceDoc::GENERIC_3_RTSP;
+		else
+			bKnownPath = FALSE;
+		if (bKnownPath)
+			sNewHost = sHost;
+		else if (sLocation != _T("/"))
+		{
+			int nDummyPort;
+			int nDummyMode;
+			MakeUrl(sHost, nPort, sLocation, CVideoDeviceDoc::URL_RTSP, sNewHost, nDummyPort, nDummyMode);
+		}
+		else
+		{
+			if (nPort != RTSP_DEFAULT_PORT)
+				sNewHost.Format(_T("rtsp://%s:%d/"), sHost, nPort);
+			else
+				sNewHost.Format(_T("rtsp://%s/"), sHost);
+		}
+	}
+	else
+	{
+		int nDummyPort;
+		int nDummyMode;
+		MakeUrl(sHost, nPort, sLocation, CVideoDeviceDoc::GENERIC_CP, sNewHost, nDummyPort, nDummyMode);
+		nNewMode = CVideoDeviceDoc::GENERIC_CP;
+	}
+
+	// Host
+	m_sHost = sNewHost;
+	m_HostComboBox.SetWindowText(m_sHost);
+
+	// Port (the edit control notification calls LoadSettings())
+	CString sPortText;
+	sPortText.Format(_T("%d"), nPort);
+	GetDlgItem(IDC_EDIT_PORT)->SetWindowText(sPortText);
+	m_nPort = nPort;
+
+	// Device Type Mode
+	m_nDeviceTypeMode = nNewMode;
+	DeviceTypeModeToSelection(m_nDeviceTypeMode);
+
+	// Update controls and load the settings saved for this camera, if any
+	EnableDisableCtrls();
+	LoadSettings();
+
+	// Credentials found in the url override the loaded ones
+	if (!sUser.IsEmpty() || !sPass.IsEmpty())
+	{
+		GetDlgItem(IDC_AUTH_USERNAME)->SetWindowText(sUser);
+		GetDlgItem(IDC_AUTH_PASSWORD)->SetWindowText(sPass);
+	}
+
+	// Do not leave the password visible in the url edit control
+	GetDlgItem(IDC_EDIT_STREAM_URL)->SetWindowText(_T(""));
+}
+
+void SetSockAddrPort(SOCKADDR_STORAGE& addr, int nPort)
+{
+	// sin_port and sin6_port are at the same offset
+	((SOCKADDR_IN*)&addr)->sin_port = htons((u_short)nPort);
+}
+
+// Opens a tcp connection and checks the answer
+// Returns 1 for RTSP, 2 for HTTP and 0 if the protocol is not recognized
+int ProbeTcpPort(const SOCKADDR_STORAGE& addr, int nAddrLen, int nPort, const CStringA& sHostForUrl)
+{
+	for (int nTry = 0; nTry < 2; nTry++)
+	{
+		SOCKET s = ::socket(addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+		if (s == INVALID_SOCKET)
+			return 0;
+		DWORD dwTimeoutMs = 1000;
+		::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&dwTimeoutMs, sizeof(dwTimeoutMs));
+		::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char*)&dwTimeoutMs, sizeof(dwTimeoutMs));
+		SOCKADDR_STORAGE a = addr;
+		SetSockAddrPort(a, nPort);
+		if (::connect(s, (sockaddr*)&a, nAddrLen) == 0)
+		{
+			CStringA sRequest;
+			if (nTry == 0)
+				sRequest.Format("OPTIONS rtsp://%s:%d/ RTSP/1.0\r\nCSeq: 1\r\n\r\n", (LPCSTR)sHostForUrl, nPort);
+			else
+				sRequest.Format("HEAD / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", (LPCSTR)sHostForUrl);
+			if (::send(s, (LPCSTR)sRequest, sRequest.GetLength(), 0) > 0)
+			{
+				char buf[16];
+				int nRead = ::recv(s, buf, sizeof(buf) - 1, 0);
+				if (nRead >= 5)
+				{
+					if (nTry == 0 && strncmp(buf, "RTSP/", 5) == 0)
+					{
+						::closesocket(s);
+						return 1;
+					}
+					else if (nTry == 1 && strncmp(buf, "HTTP/", 5) == 0)
+					{
+						::closesocket(s);
+						return 2;
+					}
+				}
+			}
+		}
+		::closesocket(s);
+	}
+	return 0;
+}
+
+void CHostPortDlg::OnButtonScanPorts()
+{
+	// Host to scan (works also when an url is in the host field)
+	CString sHostToScan;
+	CString sLocation;
+	int nUrlPort;
+	int nUrlMode;
+	ParseUrl(m_sHost, m_nPort, m_nDeviceTypeMode, sHostToScan, nUrlPort, sLocation, nUrlMode);
+	if (sHostToScan.IsEmpty())
+		return OnError();
+
+	// Common RTSP, HTTP and ONVIF ports, the order is the selection priority
+	// (81 = ESP32-CAM stream, 5000 = ONVIF of Yoosee cameras)
+	static const int nPortsToScan[] = {	554, 8554, 10554, 5543, 5544, 555, 7070,
+										88, 80, 81, 8080, 8000, 8081, 8899, 2020, 5000};
+	const int nPortsCount = sizeof(nPortsToScan) / sizeof(nPortsToScan[0]);
+
+	CWaitCursor WaitCursor;
+
+	// Resolve host
+	SOCKADDR_STORAGE addr;
+	memset(&addr, 0, sizeof(addr));
+	if (!CNetCom::StringToAddress(sHostToScan, _T("0"), (sockaddr*)&addr))
+	{
+		::AlertUser(GetSafeHwnd());
+		::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, _T("Cannot resolve ") + sHostToScan, 0);
+		return;
+	}
+	int nAddrLen = (addr.ss_family == AF_INET6) ? (int)sizeof(SOCKADDR_IN6) : (int)sizeof(SOCKADDR_IN);
+
+	// Try to connect to all the ports at the same time
+	SOCKET sockets[nPortsCount];
+	BOOL bPending[nPortsCount];
+	BOOL bOpen[nPortsCount];
+	int nPending = 0;
+	int i;
+	for (i = 0; i < nPortsCount; i++)
+	{
+		sockets[i] = INVALID_SOCKET;
+		bPending[i] = FALSE;
+		bOpen[i] = FALSE;
+		SOCKET s = ::socket(addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+		if (s == INVALID_SOCKET)
+			continue;
+		u_long ulNonBlocking = 1;
+		::ioctlsocket(s, FIONBIO, &ulNonBlocking);
+		SOCKADDR_STORAGE a = addr;
+		SetSockAddrPort(a, nPortsToScan[i]);
+		if (::connect(s, (sockaddr*)&a, nAddrLen) == 0)
+		{
+			sockets[i] = s;
+			bOpen[i] = TRUE;
+		}
+		else if (::WSAGetLastError() == WSAEWOULDBLOCK)
+		{
+			sockets[i] = s;
+			bPending[i] = TRUE;
+			nPending++;
+		}
+		else
+			::closesocket(s);
+	}
+	const DWORD dwTimeoutMs = 1500;
+	DWORD dwStart = ::GetTickCount();
+	while (nPending > 0)
+	{
+		DWORD dwElapsed = ::GetTickCount() - dwStart;
+		if (dwElapsed >= dwTimeoutMs)
+			break;
+		DWORD dwRemaining = dwTimeoutMs - dwElapsed;
+		fd_set wfds;
+		fd_set efds;
+		FD_ZERO(&wfds);
+		FD_ZERO(&efds);
+		for (i = 0; i < nPortsCount; i++)
+		{
+			if (bPending[i])
+			{
+				FD_SET(sockets[i], &wfds);
+				FD_SET(sockets[i], &efds);
+			}
+		}
+		timeval tv;
+		tv.tv_sec = (long)(dwRemaining / 1000);
+		tv.tv_usec = (long)((dwRemaining % 1000) * 1000);
+		if (::select(0, NULL, &wfds, &efds, &tv) <= 0)
+			break;
+		for (i = 0; i < nPortsCount; i++)
+		{
+			if (bPending[i])
+			{
+				if (FD_ISSET(sockets[i], &wfds))
+				{
+					bOpen[i] = TRUE;
+					bPending[i] = FALSE;
+					nPending--;
+				}
+				else if (FD_ISSET(sockets[i], &efds))
+				{
+					bPending[i] = FALSE;
+					nPending--;
+				}
+			}
+		}
+	}
+	for (i = 0; i < nPortsCount; i++)
+	{
+		if (sockets[i] != INVALID_SOCKET)
+			::closesocket(sockets[i]);
+	}
+
+	// Find out which protocol the open ports speak
+	CStringA sHostForUrl(sHostToScan);
+	if (sHostToScan.Find(_T(':')) >= 0)
+		sHostForUrl = "[" + sHostForUrl + "]";
+	CString sRtspPorts, sHttpPorts, sOtherPorts;
+	int nFirstRtspPort = 0;
+	for (i = 0; i < nPortsCount; i++)
+	{
+		if (bOpen[i])
+		{
+			int nProtocol = ProbeTcpPort(addr, nAddrLen, nPortsToScan[i], sHostForUrl);
+			CString& sList = (nProtocol == 1) ? sRtspPorts : ((nProtocol == 2) ? sHttpPorts : sOtherPorts);
+			CString sPortText;
+			sPortText.Format(_T("%d"), nPortsToScan[i]);
+			if (!sList.IsEmpty())
+				sList += _T(", ");
+			sList += sPortText;
+			if (nProtocol == 1 && nFirstRtspPort == 0)
+				nFirstRtspPort = nPortsToScan[i];
+		}
+	}
+
+	// Report
+	CString sMsg;
+	if (sRtspPorts.IsEmpty() && sHttpPorts.IsEmpty() && sOtherPorts.IsEmpty())
+		sMsg = _T("No open port found on ") + sHostToScan + _T(". Check the IP address, the power and the network connection of the camera.");
+	else
+	{
+		sMsg = _T("Open ports on ") + sHostToScan + _T(":");
+		if (!sRtspPorts.IsEmpty())
+			sMsg += _T(" RTSP ") + sRtspPorts + _T(";");
+		if (!sHttpPorts.IsEmpty())
+			sMsg += _T(" HTTP ") + sHttpPorts + _T(";");
+		if (!sOtherPorts.IsEmpty())
+			sMsg += _T(" other ") + sOtherPorts + _T(";");
+		if (sRtspPorts.IsEmpty())
+			sMsg += _T(" no RTSP port found, enable RTSP in the camera or choose an HTTP maker.");
+	}
+
+	// Select the first RTSP port, when the host field holds
+	// an url the port is part of it and cannot be changed here
+	CWnd* pEditPort = GetDlgItem(IDC_EDIT_PORT);
+	if (nFirstRtspPort > 0 && pEditPort->IsWindowEnabled())
+	{
+		CString sPortText;
+		sPortText.Format(_T("%d"), nFirstRtspPort);
+		pEditPort->SetWindowText(sPortText);
+		m_nPort = nFirstRtspPort;
+		sMsg += _T(" RTSP port ") + sPortText + _T(" selected.");
+	}
+	::AfxGetMainFrame()->PopupNotificationWnd(APPNAME_NOEXT, sMsg, 0);
+}
+
+BOOL CHostPortDlg::IsRunningQuiet(const CString& sHost, int nPort, int nDeviceTypeMode)
+{
+	CString sDevicePathName = MakeDevicePathName(sHost, nPort, nDeviceTypeMode);
+	CUImagerMultiDocTemplate* pVideoDeviceDocTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	POSITION posVideoDeviceDoc = pVideoDeviceDocTemplate->GetFirstDocPosition();
+	while (posVideoDeviceDoc)
+	{
+		CVideoDeviceDoc* pVideoDeviceDoc = (CVideoDeviceDoc*)pVideoDeviceDocTemplate->GetNextDoc(posVideoDeviceDoc);
+		if (pVideoDeviceDoc && !pVideoDeviceDoc->m_pDxCapture &&
+			pVideoDeviceDoc->GetDevicePathName() == sDevicePathName)
+			return TRUE;
+	}
+	return FALSE;
+}
+
+BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass)
+{
+	// This object only carries the values to CVideoDeviceDoc::OpenNetVideoDevice(), it is never shown.
+	// When the stream path is known the full url is used as host, ParseUrl() splits it again
+	CHostPortDlg Dlg;
+	Dlg.m_sHost = sUrl.IsEmpty() ? sHost : sUrl;
+	Dlg.m_nPort = nPort;
+	Dlg.m_nDeviceTypeMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+	if (!sUrl.IsEmpty())
+	{
+		// Known generic paths are mapped to the matching Camera Maker and Protocol entry
+		// (/onvif1 must not be registered as /11), unknown paths stay as full url in the host field
+		BOOL bRtsp = FALSE;
+		CString sSplitUser, sSplitPass, sSplitHost, sSplitPath;
+		int nSplitPort = 0;
+		if (SplitStreamUrl(sUrl, bRtsp, sSplitUser, sSplitPass, sSplitHost, nSplitPort, sSplitPath) && bRtsp && !sSplitHost.IsEmpty())
+		{
+			sSplitPath.MakeLower();
+			int nKnownMode = -1;
+			if (sSplitPath == _T("/11"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_1_RTSP;
+			else if (sSplitPath == _T("/onvif1"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_2_RTSP;
+			else if (sSplitPath == _T("/live/ch0"))
+				nKnownMode = CVideoDeviceDoc::GENERIC_3_RTSP;
+			if (nKnownMode >= 0)
+			{
+				Dlg.m_sHost = sSplitHost;
+				Dlg.m_nDeviceTypeMode = nKnownMode;
+				if (nSplitPort > 0 && nSplitPort <= 65535)
+					Dlg.m_nPort = nSplitPort;
+			}
+		}
+	}
+	if (IsRunningQuiet(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode))
+		return FALSE;
+
+	// Save the login of this camera, the device loads it from the same place
+	CUImagerApp* pApp = (CUImagerApp*)::AfxGetApp();
+	CString sDevicePathName = MakeDevicePathName(Dlg.m_sHost, Dlg.m_nPort, Dlg.m_nDeviceTypeMode);
+	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFrameUsernameExportable"), sUser);
+	pApp->WriteSecureProfileString(sDevicePathName, _T("HTTPGetFramePasswordExportable"), sPass);
+
+	// TCP is more reliable than UDP, a camera refusing it is retried with UDP by the receiving thread.
+	// An already saved user choice is not overwritten
+	if (pApp->GetProfileInt(sDevicePathName, _T("PreferTcpforRtsp"), -1) == -1)
+		pApp->WriteProfileInt(sDevicePathName, _T("PreferTcpforRtsp"), 1);
+
+	// Open
+	CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pApp->GetVideoDeviceDocTemplate()->OpenDocumentFile(NULL);
+	if (!pDoc)
+		return FALSE;
+	pDoc->OpenNetVideoDevice(&Dlg);
+	return TRUE;
+}
+
+void CHostPortDlg::OnButtonOpenScanLan()
+{
+	CCameraScanDlg Dlg(this);
+	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(Dlg.m_sUser);
+	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(Dlg.m_sPass);
+	Dlg.m_bAutoScanLan = TRUE;
+	if (Dlg.DoModal() == IDOK && Dlg.m_nOpened > 0)
+		EndDialog(IDCANCEL); // the scan dialog has already opened the cameras
+}
+
+void CHostPortDlg::OnButtonOpenScanDvr()
+{
+	// DVR host and port (works also when an url is in the host field)
+	CString sHostToScan;
+	CString sLocation;
+	int nUrlPort;
+	int nUrlMode;
+	ParseUrl(m_sHost, m_nPort, m_nDeviceTypeMode, sHostToScan, nUrlPort, sLocation, nUrlMode);
+
+	CCameraScanDlg Dlg(this);
+	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(Dlg.m_sUser);
+	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(Dlg.m_sPass);
+	Dlg.m_sDvrHost = sHostToScan;
+	Dlg.m_nDvrPort = (nUrlPort > 0 && nUrlPort <= 65535) ? nUrlPort : RTSP_DEFAULT_PORT;
+	Dlg.m_bAutoScanDvr = !sHostToScan.IsEmpty();
+	if (Dlg.DoModal() == IDOK && Dlg.m_nOpened > 0)
+		EndDialog(IDCANCEL); // the scan dialog has already opened the cameras
 }
 
 #endif

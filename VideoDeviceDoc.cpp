@@ -16,6 +16,7 @@
 #include "MotionDetHelpers.h"
 #include "Base64.h"
 #include "CMD5.h"
+#include "CameraScanDlg.h"
 #include "CSHA256.h"
 #include "Psapi.h"
 #include "NoVistaFileDlg.h"
@@ -2655,6 +2656,8 @@ int CVideoDeviceDoc::CRtspThread::Work()
 
 		// Options var
 		AVDictionary* opts = NULL;
+		AVDictionary* optsFallback = NULL; // copy of opts used to retry when the camera refuses TCP
+		BOOL bTcpFallback = FALSE;
 
 		// If set, and if TCP is available as RTSP transport, then TCP will be tried first instead of UDP
 		if (m_pDoc->m_bPreferTcpforRtsp)
@@ -2692,7 +2695,29 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		// Open rtsp
 		CStringA sAnsiURL(m_sURL);
 		pFormatCtx->probesize = 10000000; // the default of 5000000 bytes is too low
-		if ((ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts)) < 0)
+		bTcpFallback = (m_pDoc->m_bPreferTcpforRtsp && !m_pDoc->m_bUdpMulticastforRtsp);
+		if (bTcpFallback)
+			av_dict_copy(&optsFallback, opts, 0);
+		ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		if (ret < 0 && bTcpFallback && !DoExit())
+		{
+			// Some cameras do not support RTSP over TCP and answer with 400 Bad Request:
+			// retry with the default transport (UDP) instead of failing
+			::LogLine(_T("%s, RTSP over TCP refused, retrying with UDP"), m_pDoc->GetAssignedDeviceName());
+			av_dict_free(&opts);
+			opts = optsFallback;
+			optsFallback = NULL;
+			av_dict_set(&opts, "rtsp_flags", NULL, 0); // remove prefer_tcp
+			pFormatCtx = avformat_alloc_context();
+			if (!pFormatCtx)
+			{
+				ret = AVERROR(ENOMEM);
+				goto free;
+			}
+			pFormatCtx->probesize = 10000000;
+			ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		}
+		if (ret < 0)
 			goto free;
 
 		// Search video and audio streams for which we have decoders
@@ -3173,6 +3198,7 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		if (pFormatCtx)
 			avformat_close_input(&pFormatCtx);
 		av_dict_free(&opts);
+		av_dict_free(&optsFallback);
 		if (pAudioPlay)
 			delete pAudioPlay;
 		if (pAudioTools)
@@ -4035,6 +4061,13 @@ CString CVideoDeviceDoc::GetDeviceName()
 	{
 		sDevice.Format(_T("%s:%d"), m_sGetFrameVideoHost, m_nGetFrameVideoPort);
 		sDevice.Replace(_T("%"), _T(":interface")); // for IP6 link-local addresses
+
+		// Several cameras / DVR channels of the same IP:PORT opened with a full rtsp url are told
+		// apart by the stream path, otherwise they all get the same name and the same folder
+		if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP &&
+			m_HttpGetFrameLocations.GetSize() > 0 &&
+			m_HttpGetFrameLocations[0].GetLength() > 1)
+			sDevice += m_HttpGetFrameLocations[0];
 	}
 
 	// Registry key cannot begin with a backslash and should
@@ -5005,6 +5038,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 		
 		m_HttpGetFrameLocations.Add(_T("/video/mjpg.cgi"));					// D-Link, Sparklan, TrendNet
 		
+		m_HttpGetFrameLocations.Add(_T("/stream"));							// ESP32-CAM (Espressif CameraWebServer, stream port 81)
+
 		m_HttpGetFrameLocations.Add(_T("/mjpegStreamer.cgi"));				// Compro, PROCCTV, Zyxel
 
 		m_HttpGetFrameLocations.Add(_T("/cgi-bin/video.cgi?msubmenu=mjpg"));// Samsung
@@ -5112,6 +5147,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 		m_HttpGetFrameLocations.Add(_T("/ISAPI/Streaming/channels/1/picture")); // Newer Hikvision
 
 		m_HttpGetFrameLocations.Add(_T("/Streaming/channels/1/picture"));	// Hikvision, ABUS
+
+		m_HttpGetFrameLocations.Add(_T("/capture"));							// ESP32-CAM (esp32-cam-webserver, port 80)
 
 		m_HttpGetFrameLocations.Add(_T("/capture1.jpg"));					// Active WebCam Video Surveillance Software
 
@@ -7679,6 +7716,21 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 				::PostMessage(	GetView()->GetSafeHwnd(),
 								WM_THREADSAFE_CAPTURECAMERABASICSETTINGS,
 								0, 0);
+
+				// First successful connection of a new network camera: search the network for other
+				// cameras and DVR channels (the main frame checks the user setting and starts the scan)
+				// (not for streams with a path: DVR channels opened together would each start a new scan)
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess &&
+					!(m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP && m_HttpGetFrameLocations.GetSize() > 0 && m_HttpGetFrameLocations[0].GetLength() > 1))
+				{
+					CAutoScanCtx* pAutoScanCtx = new CAutoScanCtx;
+					pAutoScanCtx->m_sHost = m_sGetFrameVideoHost;
+					pAutoScanCtx->m_nPort = (m_nNetworkDeviceTypeMode >= CVideoDeviceDoc::URL_RTSP) ? (int)m_nGetFrameVideoPort : 0;
+					pAutoScanCtx->m_sUser = m_sHttpGetFrameUsername;
+					pAutoScanCtx->m_sPass = m_sHttpGetFramePassword;
+					if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOSCAN_START, 0, (LPARAM)pAutoScanCtx))
+						delete pAutoScanCtx;
+				}
 			}
 			::LogLine(_T("%s %s (%dx%d, %s)"), ML_STRING(1764, "Starting"), GetAssignedDeviceName(), m_DocRect.Width(), m_DocRect.Height(), GetDeviceFormat());
 		}
