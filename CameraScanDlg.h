@@ -179,7 +179,7 @@ protected:
 	void InitSpy();
 	void StartSpyScan();
 	void SaveSpySettings();
-	int m_nSpyTransport;	// -1 not used, 0 UDP, 1 TCP
+	int m_nSpyTransport;	// -1 not used (OnOK decides per camera), otherwise the raw IDC_SPY_TRANSPORT selection: 0 Automático, 1 TCP, 2 UDP
 	void StopScan();
 	void AddItem(const CFoundCamera& cam);
 	void EnableDisableCtrls();

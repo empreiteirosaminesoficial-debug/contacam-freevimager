@@ -2089,7 +2089,7 @@ void CCameraScanDlg::OnOK()
 	if (m_bSpy)
 	{
 		SaveSpySettings();
-		m_nSpyTransport = (((CComboBox*)GetDlgItem(IDC_SPY_TRANSPORT))->GetCurSel() == 2) ? 0 : 1; // automatic and TCP: TCP first
+		m_nSpyTransport = ((CComboBox*)GetDlgItem(IDC_SPY_TRANSPORT))->GetCurSel(); // 0 Autom\u00e1tico, 1 TCP, 2 UDP
 	}
 	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(m_sUser);
 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(m_sPass);
@@ -2107,13 +2107,26 @@ void CCameraScanDlg::OnOK()
 				CFoundCamera cam(m_Items[nItem]);
 
 				// Yoosee/Gwell cameras only work with the path /onvif1 (Generic /onvif1, RTSP Transport unchecked)
-				if (cam.m_sInfo.Find(_T("Yoosee")) != -1 || cam.m_sInfo.Find(_T("Gwell")) != -1)
+				BOOL bYoosee = (cam.m_sInfo.Find(_T("Yoosee")) != -1 || cam.m_sInfo.Find(_T("Gwell")) != -1);
+				if (bYoosee)
 					cam.m_sUrl.Format(_T("rtsp://%s:%d/onvif1"), cam.m_sHost, cam.m_nPort);
 				// Fill the camera maker settings automatically from the stream path
 				// (done by OpenNetworkCamera with CCameraScanner::ModeFromRtspPath())
 
+				// Transport: "Autom\u00e1tico" does NOT force TCP on every camera (most work fine, and
+				// several reject a TCP-only SETUP with 400 Bad Request) \u2014 it only forces TCP for the
+				// cameras already known to need it (Yoosee/Gwell), everything else keeps the normal
+				// UDP-first default (and still gets the automatic UDP fallback if TCP is forced and refused)
+				int nTransport;
+				if (m_nSpyTransport == 1)
+					nTransport = 1;			// TCP forced for every camera
+				else if (m_nSpyTransport == 2)
+					nTransport = 0;			// UDP forced for every camera
+				else
+					nTransport = bYoosee ? 1 : -1;	// Autom\u00e1tico: TCP only for the cameras that need it
+
 				int nForceMode = (cam.m_sUrl.IsEmpty() && cam.m_nMode >= 0) ? cam.m_nMode : -1;
-				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, m_sUser, m_sPass, nForceMode, m_nSpyTransport))
+				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, m_sUser, m_sPass, nForceMode, nTransport))
 					m_nOpened++;
 			}
 		}

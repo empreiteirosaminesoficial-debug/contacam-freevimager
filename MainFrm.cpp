@@ -2443,10 +2443,15 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 	{
 		const CFoundCamera& cam = pCtx->m_Result;
 		BOOL bSame = (cam.m_nPort == pCtx->m_nOldPort && (cam.m_nMode < 0 || cam.m_nMode == pCtx->m_nOldMode));
+		// Only force TCP for the cameras already known to need it (Yoosee/Gwell); everything else
+		// keeps the normal UDP-first default, several cameras answer 400 Bad Request to a TCP-only
+		// SETUP
+		BOOL bYoosee = (cam.m_sInfo.Find(_T("Yoosee")) >= 0 || cam.m_sInfo.Find(_T("Gwell")) >= 0);
+		int nTransport = bYoosee ? 1 : -1;
 		if (!bSame && pCtx->m_bSilentApply)
 		{
 			// The person clicked the Spy button on purpose: apply right away, no question asked
-			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, 1))
+			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport))
 				RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
 		}
 		else if (!bSame)
@@ -2457,7 +2462,7 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 			if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
 			{
 				pOld = FindVideoDeviceDoc(pCtx->m_sDevicePathName); // may have been closed meanwhile
-				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, 1) && pOld)
+				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport) && pOld)
 					RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
 			}
 		}
