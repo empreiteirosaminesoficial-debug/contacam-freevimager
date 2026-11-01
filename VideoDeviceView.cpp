@@ -87,6 +87,38 @@ CVideoDeviceView::CVideoDeviceView()
 	m_pSmoothSws = NULL;
 }
 
+// Light sharpen (Laplacian) applied to an enlarged full-screen BGRA frame, to offset the
+// softness that any upscale (even a good one like Lanczos) introduces. Cheap: one pass, integer math.
+#define FULLSCREEN_SHARPEN_AMOUNT	50	// 0 = off, same 0..100-ish scale as the crop camera's sharpen
+
+static void SharpenBgra(std::vector<BYTE>& Buf, int w, int h, int nAmount)
+{
+	if (nAmount <= 0 || w < 3 || h < 3)
+		return;
+	std::vector<BYTE> Src(Buf); // read from a copy, write into Buf
+	const BYTE* s = &Src[0];
+	BYTE* d = &Buf[0];
+	const int stride = w * 4;
+	for (int y = 1 ; y < h - 1 ; y++)
+	{
+		const BYTE* row = s + (size_t)y * stride;
+		const BYTE* rowUp = s + (size_t)(y - 1) * stride;
+		const BYTE* rowDn = s + (size_t)(y + 1) * stride;
+		BYTE* out = d + (size_t)y * stride;
+		for (int x = 1 ; x < w - 1 ; x++)
+		{
+			int o = x * 4;
+			for (int ch = 0 ; ch < 3 ; ch++) // B, G, R (alpha untouched)
+			{
+				int c = row[o + ch];
+				int lap = 4 * c - row[o - 4 + ch] - row[o + 4 + ch] - rowUp[o + ch] - rowDn[o + ch];
+				int v = c + lap * nAmount / 400;
+				out[o + ch] = (BYTE)(v < 0 ? 0 : (v > 255 ? 255 : v));
+			}
+		}
+	}
+}
+
 CVideoDeviceView::~CVideoDeviceView()
 {
 	if (m_pSmoothSws)
@@ -117,7 +149,7 @@ BOOL CVideoDeviceView::DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pD
 	m_pSmoothSws = sws_getCachedContextHelper(	m_pSmoothSws,
 												nSrcW, nSrcH, AV_PIX_FMT_BGRA,
 												nDstW, nDstH, AV_PIX_FMT_BGRA,
-												SWS_BICUBIC);
+												SWS_LANCZOS);	// sharper than bicubic for an enlargement, same cost class
 	if (!m_pSmoothSws)
 		return FALSE;
 	size_t nSize = (size_t)nDstW * nDstH * 4;
@@ -131,6 +163,7 @@ BOOL CVideoDeviceView::DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pD
 	int dstStride[4] = {nDstW * 4, 0, 0, 0};
 	if (sws_scale(m_pSmoothSws, srcData, srcStride, 0, nSrcH, dstData, dstStride) <= 0)
 		return FALSE;
+	SharpenBgra(m_SmoothBuf, nDstW, nDstH, FULLSCREEN_SHARPEN_AMOUNT);
 
 	BITMAPINFO Bmi;
 	memset(&Bmi, 0, sizeof(Bmi));
