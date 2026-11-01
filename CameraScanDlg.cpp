@@ -1259,6 +1259,62 @@ static void UdpDiscovery(CScanSink& sink, CMapStringToString& mapInfo)
 	::closesocket(s);
 }
 
+// Local camera database (your own network only): every camera the Spy identifies is remembered, and
+// the RTSP path that worked for a given brand/model banner is kept so that a brand-new unit of the
+// same model is found straight away next time, without sweeping ~55 paths again. This is the local,
+// self-built equivalent of what the description asked for ("igual ao Shodan"): no internet lookup, no
+// credentials involved, it only ever reads back what THIS program itself already found on THIS network.
+static CString GetDbIniPath()
+{
+	CString sDir = ((CUImagerApp*)::AfxGetApp())->GetConfigFilesDir();
+	::CreateDirectory(sDir, NULL); // no-op if it already exists
+	return sDir + _T("\\CameraDatabase.ini");
+}
+
+// Keys in a .ini section/entry name cannot contain '=' or control characters; brand text is plain
+// words so this is mostly a safety net
+static CString DbSanitizeKey(const CString& sIn)
+{
+	CString sOut(sIn);
+	sOut.Remove(_T('='));
+	sOut.Remove(_T('\n'));
+	sOut.Remove(_T('\r'));
+	sOut.Trim();
+	return sOut.Left(120);
+}
+
+static CString DbGetLearnedPath(const CString& sBrand)
+{
+	if (sBrand.IsEmpty())
+		return CString();
+	return ::GetProfileIniString(_T("LearnedPaths"), DbSanitizeKey(sBrand), _T(""), GetDbIniPath());
+}
+
+static void DbSaveLearnedPath(const CString& sBrand, const CString& sPath)
+{
+	if (sBrand.IsEmpty() || sPath.IsEmpty())
+		return;
+	CString sKey(DbSanitizeKey(sBrand));
+	CString sExisting(::GetProfileIniString(_T("LearnedPaths"), sKey, _T(""), GetDbIniPath()));
+	if (sExisting != sPath) // only writes to disk when it is new information
+		::WriteProfileIniString(_T("LearnedPaths"), sKey, sPath, GetDbIniPath());
+}
+
+// One row per host:port ever found, overwritten each time (keeps the latest info and "last seen")
+static void DbSaveCamera(const CFoundCamera& cam)
+{
+	if (cam.m_sHost.IsEmpty())
+		return;
+	CString sKey;
+	sKey.Format(_T("%s_%d"), cam.m_sHost, cam.m_nPort);
+	CString sIni(GetDbIniPath());
+	::WriteProfileIniString(sKey, _T("Maker"), cam.m_sMaker, sIni);
+	::WriteProfileIniString(sKey, _T("Url"), cam.m_sUrl, sIni);
+	::WriteProfileIniString(sKey, _T("Type"), cam.m_sType, sIni);
+	CTime now(CTime::GetCurrentTime());
+	::WriteProfileIniString(sKey, _T("LastSeen"), now.Format(_T("%Y-%m-%d %H:%M")), sIni);
+}
+
 void CCameraScanner::ScanRange(	CScanSink& sink,
 								DWORD dwFirstIp,
 								DWORD dwLastIp,
@@ -1408,6 +1464,22 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 		((SOCKADDR_IN*)&addr)->sin_addr.s_addr = htonl(aHosts[nHost]);
 		int nAddrLen = (int)sizeof(SOCKADDR_IN);
 		CStringA sHostA(sHost);
+
+		// Web page / announcements of this host, read once and reused below: gives an early brand
+		// hint, which is looked up in the local database for a path already known to work for that
+		// brand (learned from a previous scan, here or elsewhere on this network)
+		CString sEarlyBrand, sEarlyWebInfo;
+		for (int w = 0; w < nPortCount; w++)
+		{
+			int nWeb = aPorts[w];
+			if (!(aOpenMask[nHost] & ((DWORD)1 << w)) || !(nWeb == 80 || nWeb == 81 || nWeb == 88 || nWeb == 8000 || nWeb == 8080 || nWeb == 8899))
+				continue;
+			sEarlyWebInfo = WebFingerprint(addr, nAddrLen, sHost, nWeb, sEarlyBrand);
+			if (!sEarlyWebInfo.IsEmpty())
+				break;
+		}
+		CString sLearnedPath(DbGetLearnedPath(sEarlyBrand));
+
 		for (int p = 0; p < nPortCount; p++)
 		{
 			if (!(aOpenMask[nHost] & ((DWORD)1 << p)))
@@ -1429,11 +1501,26 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 				cam.m_sMaker = sMakerName;
 				cam.m_sInfo = _T("fabricante: ") + sMakerName;
 				sink.OnFound(cam);
+				DbSaveCamera(cam);
 				nFound++;
 				break;
 			}
 			CString sPath;
-			int nRes = FindRtspPath(addr, nAddrLen, sHost, nPort, sUser, sPass, CString(), sink, sPath);
+			int nRes = 0;
+			if (!sLearnedPath.IsEmpty())
+			{
+				// Fast path: this brand's banner was already matched to a working path before
+				int nCode = RtspDescribe(addr, nAddrLen, sHost, nPort, sLearnedPath, sUser, sPass);
+				if (nCode == 200)
+				{
+					sPath = sLearnedPath;
+					nRes = 1;
+				}
+				else if (nCode == 401)
+					nRes = -1;
+			}
+			if (nRes == 0)
+				nRes = FindRtspPath(addr, nAddrLen, sHost, nPort, sUser, sPass, CString(), sink, sPath);
 			if (nRes == 0)
 				continue; // stream path not found on this port, try the next one
 			if (nRes == 1 || nRes == 2)
@@ -1445,35 +1532,23 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
 				cam.m_sInfo = _T("caminho ") + sPath;
 				if (nRes == 2)
 					cam.m_sInfo += _T(" (a c\u00e2mera responde a qualquer caminho, stream principal estimado)");
+				if (cam.m_sMaker.IsEmpty() && !sEarlyBrand.IsEmpty())
+					cam.m_sMaker = sEarlyBrand;
 				if (!cam.m_sMaker.IsEmpty())
 					cam.m_sInfo += _T(", fabricante: ") + cam.m_sMaker;
+				if (!sEarlyWebInfo.IsEmpty())
+					cam.m_sInfo += _T(", ") + sEarlyWebInfo;
+				// Teach the database: next camera with this same banner tries this path first
+				DbSaveLearnedPath(cam.m_sMaker, sPath);
 			}
 			else
 				cam.m_sInfo = sUser.IsEmpty() ? _T("login necess\u00e1rio") : _T("login recusado");
-			// Web page and announcements of the same host: maker and model
-			for (int w = 0; w < nPortCount; w++)
-			{
-				int nWeb = aPorts[w];
-				if (!(aOpenMask[nHost] & ((DWORD)1 << w)) || !(nWeb == 80 || nWeb == 81 || nWeb == 88 || nWeb == 8000 || nWeb == 8080 || nWeb == 8899))
-					continue;
-				CString sBrand;
-				CString sWeb(WebFingerprint(addr, nAddrLen, sHost, nWeb, sBrand));
-				if (!sWeb.IsEmpty())
-				{
-					cam.m_sInfo += _T(", ") + sWeb;
-					if (cam.m_sMaker.IsEmpty() && !sBrand.IsEmpty())
-					{
-						cam.m_sMaker = sBrand;
-						cam.m_sInfo += _T(", fabricante: ") + sBrand;
-					}
-					break;
-				}
-			}
 			CString sNet;
 			if (mapNet.Lookup(sHost, sNet))
 				cam.m_sInfo += _T(", ") + sNet;
 			mapReported[sHost] = _T("1");
 			sink.OnFound(cam);
+			DbSaveCamera(cam);
 			nFound++;
 			break;
 		}
