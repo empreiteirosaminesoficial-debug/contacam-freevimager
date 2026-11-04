@@ -3574,6 +3574,12 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 						pAutoFixCtx->m_nOldMode = (int)m_pDoc->m_nNetworkDeviceTypeMode;
 						pAutoFixCtx->m_sUser = m_pDoc->m_sHttpGetFrameUsername;
 						pAutoFixCtx->m_sPass = m_pDoc->m_sHttpGetFramePassword;
+						pAutoFixCtx->m_sFallbackUrl = ::AfxGetApp()->GetProfileString(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackUrl"), _T(""));
+						pAutoFixCtx->m_sFallbackPath = ::AfxGetApp()->GetProfileString(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackPath"), _T(""));
+						pAutoFixCtx->m_nFallbackPort = ::AfxGetApp()->GetProfileInt(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackPort"), 0);
+						pAutoFixCtx->m_nFallbackMode = ::AfxGetApp()->GetProfileInt(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackMode"), -1);
+						pAutoFixCtx->m_bAutomatic = TRUE;
+						pAutoFixCtx->m_bSkipOld = TRUE;
 						if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 0, (LPARAM)pAutoFixCtx))
 							delete pAutoFixCtx;
 					}
@@ -8263,6 +8269,21 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 						delete pAutoScanCtx;
 				}
 			}
+				// Learn an alternate supported network stream for later silent recovery.
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && m_nNetworkDeviceTypeMode != CROP_CAMERA && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess)
+				{
+					CAutoFixCtx* pLearnCtx = new CAutoFixCtx;
+					pLearnCtx->m_sDevicePathName = GetDevicePathName();
+					pLearnCtx->m_sHost = m_sGetFrameVideoHost;
+					pLearnCtx->m_nOldPort = (int)m_nGetFrameVideoPort;
+					pLearnCtx->m_nOldMode = (int)m_nNetworkDeviceTypeMode;
+					pLearnCtx->m_sUser = m_sHttpGetFrameUsername;
+					pLearnCtx->m_sPass = m_sHttpGetFramePassword;
+					pLearnCtx->m_bSkipOld = TRUE;
+					pLearnCtx->m_bLearnOnly = TRUE;
+					if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 2, (LPARAM)pLearnCtx))
+						delete pLearnCtx;
+				}
 			::LogLine(_T("%s %s (%dx%d, %s)"), ML_STRING(1764, "Starting"), GetAssignedDeviceName(), m_DocRect.Width(), m_DocRect.Height(), GetDeviceFormat());
 		}
 	}
@@ -9706,15 +9727,22 @@ void CVideoDeviceDoc::ConnectHttp()
 	m_HttpThread.SetEventVideoConnect();
 }
 
-void CVideoDeviceDoc::ConnectRtsp()
+CString CVideoDeviceDoc::GetRtspPathAndQuery(	NetworkDeviceTypeMode nDeviceTypeMode,
+												BOOL bPreferTcpForRtsp,
+												const CString& sUsername,
+												const CString& sPassword,
+												BOOL& bCredentialAlreadyAdded)
 {
 	// Prepare path and optional query
 	CString sPathAndQuery;
-	BOOL bCredentialAlreadyAdded = FALSE;
-	switch (m_nNetworkDeviceTypeMode)
+	bCredentialAlreadyAdded = FALSE;
+	switch (nDeviceTypeMode)
 	{
-		case URL_RTSP:				
-			sPathAndQuery = m_HttpGetFrameLocations[0];
+		case URL_RTSP:
+		case GENERIC_SP:
+		case GENERIC_CP:
+			// No fixed per-maker path: URL_RTSP uses the user supplied location,
+			// GENERIC_SP/CP are not RTSP modes at all. Caller handles these.
 			break;
 
 		case GENERIC_1_RTSP:		// Ctronics, Escam, FDT, HooToo, IdeaNext, INSTAR, KKmoon, Microseven, SV3C, Wansview, WBox
@@ -9749,19 +9777,19 @@ void CVideoDeviceDoc::ConnectRtsp()
 
 		case GENERIC_4_RTSP:		// Chinavasion, Cotier, Ctronics, Escam, Xvision
 		case FALCONEYE_RTSP:		
-			sPathAndQuery = m_bPreferTcpforRtsp ? _T("/ch01.264?ptype=tcp") : _T("/ch01.264?ptype=udp");
+			sPathAndQuery = bPreferTcpForRtsp ? _T("/ch01.264?ptype=tcp") : _T("/ch01.264?ptype=udp");
 			break;
 
 		case GENERIC_5_RTSP:		// Note: it is legal to have ampersands and equal signs in the path part of an url
-			sPathAndQuery = CString(_T("/user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("&password=") + ::UrlEncode(m_sHttpGetFramePassword, TRUE) + 
+			sPathAndQuery = CString(_T("/user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("&password=") + ::UrlEncode(sPassword, TRUE) + 
 							_T("&channel=1&stream=0.sdp");
 			bCredentialAlreadyAdded = TRUE;
 			break;
 
 		case GENERIC_6_RTSP:		// Note: it is legal to have equal signs in the path part of an url
-			sPathAndQuery = CString(_T("/user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("_password=") + ::UrlEncode(m_sHttpGetFramePassword, TRUE) +
+			sPathAndQuery = CString(_T("/user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("_password=") + ::UrlEncode(sPassword, TRUE) +
 							_T("_channel=1_stream=0.sdp");
 			bCredentialAlreadyAdded = TRUE;
 			break;
@@ -9941,8 +9969,8 @@ void CVideoDeviceDoc::ConnectRtsp()
 			break;
 
 		case SUMPPLE_RTSP:
-			sPathAndQuery = CString(_T("/live/av0?user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("&passwd=") + (m_sHttpGetFramePassword.IsEmpty() ? _T("sumpple") : ::UrlEncode(m_sHttpGetFramePassword, TRUE));
+			sPathAndQuery = CString(_T("/live/av0?user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("&passwd=") + (sPassword.IsEmpty() ? _T("sumpple") : ::UrlEncode(sPassword, TRUE));
 			bCredentialAlreadyAdded = TRUE;
 			break;
 
@@ -9961,7 +9989,7 @@ void CVideoDeviceDoc::ConnectRtsp()
 		
 		case VSTARCAM_RTSP:
 		case ZMODO_RTSP:			
-			sPathAndQuery = m_bPreferTcpforRtsp ? _T("/tcp/av0_0") : _T("/udp/av0_0");
+			sPathAndQuery = bPreferTcpForRtsp ? _T("/tcp/av0_0") : _T("/udp/av0_0");
 			break;
 
 		case XIAOMI_RTSP:			
@@ -9988,6 +10016,22 @@ void CVideoDeviceDoc::ConnectRtsp()
 			ASSERT(FALSE);
 			break;
 	}
+	return sPathAndQuery;
+}
+
+void CVideoDeviceDoc::ConnectRtsp()
+{
+	// Prepare path and optional query
+	CString sPathAndQuery;
+	BOOL bCredentialAlreadyAdded = FALSE;
+	if (m_nNetworkDeviceTypeMode == URL_RTSP)
+		sPathAndQuery = m_HttpGetFrameLocations[0];
+	else
+		sPathAndQuery = GetRtspPathAndQuery(	m_nNetworkDeviceTypeMode,
+												m_bPreferTcpforRtsp,
+												m_sHttpGetFrameUsername,
+												m_sHttpGetFramePassword,
+												bCredentialAlreadyAdded);
 
 	// Start thread with given url
 	CString sHost(m_sGetFrameVideoHost);

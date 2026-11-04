@@ -3574,6 +3574,12 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 						pAutoFixCtx->m_nOldMode = (int)m_pDoc->m_nNetworkDeviceTypeMode;
 						pAutoFixCtx->m_sUser = m_pDoc->m_sHttpGetFrameUsername;
 						pAutoFixCtx->m_sPass = m_pDoc->m_sHttpGetFramePassword;
+						pAutoFixCtx->m_sFallbackUrl = ::AfxGetApp()->GetProfileString(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackUrl"), _T(""));
+						pAutoFixCtx->m_sFallbackPath = ::AfxGetApp()->GetProfileString(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackPath"), _T(""));
+						pAutoFixCtx->m_nFallbackPort = ::AfxGetApp()->GetProfileInt(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackPort"), 0);
+						pAutoFixCtx->m_nFallbackMode = ::AfxGetApp()->GetProfileInt(pAutoFixCtx->m_sDevicePathName, _T("AutoSpyFallbackMode"), -1);
+						pAutoFixCtx->m_bAutomatic = TRUE;
+						pAutoFixCtx->m_bSkipOld = TRUE;
 						if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 0, (LPARAM)pAutoFixCtx))
 							delete pAutoFixCtx;
 					}
@@ -8263,6 +8269,21 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 						delete pAutoScanCtx;
 				}
 			}
+				// Learn an alternate supported network stream for later silent recovery.
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && m_nNetworkDeviceTypeMode != CROP_CAMERA && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess)
+				{
+					CAutoFixCtx* pLearnCtx = new CAutoFixCtx;
+					pLearnCtx->m_sDevicePathName = GetDevicePathName();
+					pLearnCtx->m_sHost = m_sGetFrameVideoHost;
+					pLearnCtx->m_nOldPort = (int)m_nGetFrameVideoPort;
+					pLearnCtx->m_nOldMode = (int)m_nNetworkDeviceTypeMode;
+					pLearnCtx->m_sUser = m_sHttpGetFrameUsername;
+					pLearnCtx->m_sPass = m_sHttpGetFramePassword;
+					pLearnCtx->m_bSkipOld = TRUE;
+					pLearnCtx->m_bLearnOnly = TRUE;
+					if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 2, (LPARAM)pLearnCtx))
+						delete pLearnCtx;
+				}
 			::LogLine(_T("%s %s (%dx%d, %s)"), ML_STRING(1764, "Starting"), GetAssignedDeviceName(), m_DocRect.Width(), m_DocRect.Height(), GetDeviceFormat());
 		}
 	}

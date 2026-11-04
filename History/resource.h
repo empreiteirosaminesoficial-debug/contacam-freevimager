@@ -2397,6 +2397,8 @@
 #define IDS_STRING1915                  1915
 #define IDC_STATIC1916                  1916
 #define IDS_STRING1916                  1916
+#define IDS_STRING5000                  5000
+#define IDS_STRING5001                  5001
 #define IDC_STATIC1917                  1917
 #define IDC_STATIC1918                  1918
 #define IDC_STATIC1919                  1919
@@ -3268,6 +3270,7 @@
 #define IDC_SPY_PORTS                   2615
 #define IDC_SPY_MAKER                   2616
 #define IDC_SPY_TRANSPORT               2617
+#define IDC_SPY_MASK                    2618
 #define ID_SPY                          33557
 #define ID_DVR_OFF                      33558
 #define ID_DVR_COLUMN                   33559
@@ -3276,15 +3279,19 @@
 #define ID_CAPTURE_SPY                  33562
 #define ID_CAPTURE_DELETE_CAMERA        33563
 #define ID_CAPTURE_NETWORK_EDIT         33564
+#define IDC_STATIC_AUTODETECT           2619
+#define IDC_STATIC_AUTODETECT_HINT      2620
+#define IDC_EDIT_CAMERA_MASK            2621
+#define IDC_BUTTON_DETECT_FLOWS         2622
 
 // Next default values for new objects
-// 
+//
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_3D_CONTROLS                     1
 #define _APS_NEXT_RESOURCE_VALUE        1505
 #define _APS_NEXT_COMMAND_VALUE         33565
-#define _APS_NEXT_CONTROL_VALUE         2618
+#define _APS_NEXT_CONTROL_VALUE         2621
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

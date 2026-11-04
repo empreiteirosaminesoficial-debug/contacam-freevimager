@@ -164,7 +164,8 @@ public:
 	// Closes a camera and, when it is closed, removes its configuration and autorun entry
 	// (the recordings are not deleted)
 	void RemoveCamera(const CString& sDevicePathName, CWnd* pFrame);
-	void CropResolveLinks();														// links the crop cameras to their source camera
+	void CropResolveLinks();
+	void CropUpdateSourcePath(const CString& sOldPath, const CString& sNewPath);	// persistently redirect open crop cameras to a replacement source
 #endif
 
 // Overrides

@@ -52,6 +52,7 @@ BEGIN_MESSAGE_MAP(CHostPortDlg, CDialog)
 	ON_BN_CLICKED(IDC_BUTTON_HELP, OnButtonHelp)
 	ON_BN_CLICKED(IDC_BUTTON_FILL_FROM_URL, OnButtonFillFromUrl)
 	ON_BN_CLICKED(IDC_BUTTON_SCAN_PORTS, OnButtonScanPorts)
+	ON_BN_CLICKED(IDC_BUTTON_DETECT_FLOWS, OnButtonDetectFlows)
 	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_LAN, OnButtonOpenScanLan)
 	ON_BN_CLICKED(IDC_BUTTON_OPEN_SCAN_DVR, OnButtonOpenScanDvr)
 	//}}AFX_MSG_MAP
@@ -331,6 +332,7 @@ BOOL CHostPortDlg::OnInitDialog()
 	// Update Controls
 	// Search outras cameras after the first successful connection of a new camera
 	((CButton*)GetDlgItem(IDC_CHECK_AUTOSCAN))->SetCheck(::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1) ? 1 : 0);
+	GetDlgItem(IDC_EDIT_CAMERA_MASK)->SetWindowText(::AfxGetApp()->GetProfileString(_T("HostPortDlg"), _T("CameraSubnetMask"), _T("")));
 
 	EnableDisableCtrls();
 	LoadSettings();
@@ -1384,6 +1386,35 @@ BOOL CHostPortDlg::OpenNetworkCamera(const CString& sHost, int nPort, const CStr
 		return FALSE;
 	pDoc->OpenNetVideoDevice(&Dlg);
 	return TRUE;
+}
+
+void CHostPortDlg::OnButtonDetectFlows()
+{
+	CString sInputHost, sUser, sPass, sMask;
+	GetDlgItem(IDC_COMBO_HOST)->GetWindowText(sInputHost);
+	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(sUser);
+	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(sPass);
+	GetDlgItem(IDC_EDIT_CAMERA_MASK)->GetWindowText(sMask);
+	sInputHost.Trim(); sMask.Trim();
+	if (sInputHost.IsEmpty()) return OnError();
+	::AfxGetApp()->WriteProfileString(_T("HostPortDlg"), _T("CameraSubnetMask"), sMask);
+	CString sHost, sLocation;
+	int nPort = m_nPort, nMode = m_nDeviceTypeMode;
+	ParseUrl(sInputHost, m_nPort, m_nDeviceTypeMode, sHost, nPort, sLocation, nMode);
+	CCameraScanDlg Spy(this, IDD_SPY);
+	Spy.m_sUser = sUser; Spy.m_sPass = sPass;
+	Spy.m_sSpyFromIp = sHost; Spy.m_sSpyMask = sMask; Spy.m_bAutoScanSpy = TRUE;
+	static const int nProbePorts[] = { 554, 500, 5000, 443, 8554, 10554, 5543, 5544, 555, 7070, 80, 81, 88, 8000, 8080, 8081, 8899 };
+	CString sProbePorts;
+	if (nPort > 0 && nPort <= 65535) sProbePorts.Format(_T("%d"), nPort);
+	for (int i = 0; i < (int)(sizeof(nProbePorts) / sizeof(nProbePorts[0])); ++i)
+	{
+		if (nProbePorts[i] == nPort) continue;
+		CString sPort; sPort.Format(_T("%s%d"), sProbePorts.IsEmpty() ? _T("") : _T(", "), nProbePorts[i]);
+		sProbePorts += sPort;
+	}
+	Spy.m_sSpyPorts = sProbePorts;
+	Spy.DoModal();
 }
 
 void CHostPortDlg::OnButtonOpenScanLan()

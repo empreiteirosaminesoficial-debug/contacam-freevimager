@@ -2438,21 +2438,40 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 	CAutoFixCtx* pCtx = (CAutoFixCtx*)lparam;
 	if (!pCtx)
 		return 0;
+	if (pCtx->m_bLearnOnly)
+	{
+		if (pCtx->m_bFound)
+		{
+			::AfxGetApp()->WriteProfileString(pCtx->m_sDevicePathName, _T("AutoSpyFallbackUrl"), pCtx->m_Result.m_sUrl);
+			::AfxGetApp()->WriteProfileString(pCtx->m_sDevicePathName, _T("AutoSpyFallbackPath"), pCtx->m_Result.m_sStreamPath);
+			::AfxGetApp()->WriteProfileInt(pCtx->m_sDevicePathName, _T("AutoSpyFallbackPort"), pCtx->m_Result.m_nPort);
+			::AfxGetApp()->WriteProfileInt(pCtx->m_sDevicePathName, _T("AutoSpyFallbackMode"), pCtx->m_Result.m_nMode);
+		}
+		delete pCtx;
+		return 0;
+	}
 	CVideoDeviceDoc* pOld = FindVideoDeviceDoc(pCtx->m_sDevicePathName);
 	if (pOld && pCtx->m_bFound)
 	{
+		if (pCtx->m_bAutomatic && pOld->m_bCaptureStarted && !pOld->m_bWatchDogVideoAlarm)
+		{ delete pCtx; return 0; }
 		const CFoundCamera& cam = pCtx->m_Result;
-		BOOL bSame = (cam.m_nPort == pCtx->m_nOldPort && (cam.m_nMode < 0 || cam.m_nMode == pCtx->m_nOldMode));
+		int nForceMode = (cam.m_sUrl.IsEmpty() && cam.m_nMode >= 0) ? cam.m_nMode : -1;
+		CString sNewDevicePath = (nForceMode >= 0) ? CHostPortDlg::MakeDevicePathName(cam.m_sHost, cam.m_nPort, nForceMode) : CHostPortDlg::MakeDevicePathName(cam.m_sUrl, cam.m_nPort, CVideoDeviceDoc::GENERIC_1_RTSP);
+		BOOL bSame = (sNewDevicePath == pCtx->m_sDevicePathName);
 		// Only force TCP for the cameras already known to need it (Yoosee/Gwell); everything else
 		// keeps the normal UDP-first default, several cameras answer 400 Bad Request to a TCP-only
 		// SETUP
 		BOOL bYoosee = (cam.m_sInfo.Find(_T("Yoosee")) >= 0 || cam.m_sInfo.Find(_T("Gwell")) >= 0);
 		int nTransport = bYoosee ? 1 : -1;
-		if (!bSame && pCtx->m_bSilentApply)
+		if (!bSame && (pCtx->m_bSilentApply || pCtx->m_bAutomatic))
 		{
-			// The person clicked the Spy button on purpose: apply right away, no question asked
-			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport))
+			CString sNewPath = sNewDevicePath;
+			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, nForceMode, nTransport))
+			{
+				CropUpdateSourcePath(pCtx->m_sDevicePathName, sNewPath);
 				RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
+			}
 		}
 		else if (!bSame)
 		{
@@ -2462,8 +2481,12 @@ LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
 			if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
 			{
 				pOld = FindVideoDeviceDoc(pCtx->m_sDevicePathName); // may have been closed meanwhile
-				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport) && pOld)
+				CString sNewPath = sNewDevicePath;
+				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, nForceMode, nTransport) && pOld)
+				{
+					CropUpdateSourcePath(pCtx->m_sDevicePathName, sNewPath);
 					RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
+				}
 			}
 		}
 		else if (pCtx->m_bSilentApply)
@@ -2562,6 +2585,23 @@ BOOL CMainFrame::CreateCropCamera(CVideoDeviceDoc* pSrc, int nL, int nT, int nR,
 	// Start receiving frames
 	g_CropManager.Link(pSrc, pDoc, nL, nT, nR, nB);
 	return TRUE;
+}
+
+void CMainFrame::CropUpdateSourcePath(const CString& sOldPath, const CString& sNewPath)
+{
+	if (sOldPath.IsEmpty() || sNewPath.IsEmpty() || sOldPath == sNewPath) return;
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	if (!pTemplate) return;
+	POSITION pos = pTemplate->GetFirstDocPosition();
+	while (pos)
+	{
+		CVideoDeviceDoc* pCrop = (CVideoDeviceDoc*)pTemplate->GetNextDoc(pos);
+		if (pCrop && !pCrop->m_bClosing && pCrop->m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA && pCrop->m_sCropSource == sOldPath)
+		{
+			pCrop->m_sCropSource = sNewPath;
+			::AfxGetApp()->WriteProfileString(pCrop->GetDevicePathName(), _T("CropSource"), sNewPath);
+		}
+	}
 }
 
 void CMainFrame::CropResolveLinks()

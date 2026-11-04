@@ -3270,6 +3270,7 @@
 #define IDC_SPY_PORTS                   2615
 #define IDC_SPY_MAKER                   2616
 #define IDC_SPY_TRANSPORT               2617
+#define IDC_SPY_MASK                    2618
 #define ID_SPY                          33557
 #define ID_DVR_OFF                      33558
 #define ID_DVR_COLUMN                   33559

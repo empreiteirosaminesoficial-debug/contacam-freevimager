@@ -25,7 +25,8 @@ public:
 	CFoundCamera() { m_nPort = 0; m_nMode = -1; };
 	CString m_sHost;	// IP or hostname
 	int m_nPort;		// RTSP port
-	CString m_sUrl;		// rtsp://host[:port]/path without credentials, empty if the stream path is unknown
+	CString m_sUrl;		// full RTSP URL when available
+	CString m_sStreamPath;	// verified maker path (HTTP or RTSP)
 	CString m_sType;	// "RTSP", "ONVIF" or "DVR ch 3"
 	CString m_sInfo;	// name / hardware reported by ONVIF or additional notes
 	int m_nMode;		// CVideoDeviceDoc::NetworkDeviceTypeMode of the camera maker list, -1 if unknown
@@ -86,7 +87,9 @@ public:
 						  int nMakerMode,
 						  const CString& sMakerName,
 						  const CString& sUser,
-						  const CString& sPass);
+						  const CString& sPass,
+						  const CArray<int, int>* paMakerModes = NULL,
+						  const CStringArray* psaMakerNames = NULL);
 
 	// Entry of the camera maker list that uses the given RTSP path, -1 if there is none
 	// Same as ScanRange with an explicit list of hosts (host byte order), up to 65536 hosts
@@ -141,9 +144,9 @@ void StartAutoScan(CAutoScanCtx* pCtx); // deletes pCtx if the thread cannot be 
 class CAutoFixCtx : public CScanSink
 {
 public:
-	CAutoFixCtx() { m_nOldPort = 0; m_nOldMode = -1; m_hNotify = NULL; m_bCancel = FALSE; m_bFound = FALSE; m_bSilentApply = FALSE; m_bSkipOld = FALSE; };
+	CAutoFixCtx() { m_nOldPort = 0; m_nOldMode = -1; m_nFallbackPort = 0; m_nFallbackMode = -1; m_hNotify = NULL; m_bCancel = FALSE; m_bFound = FALSE; m_bSilentApply = FALSE; m_bSkipOld = FALSE; m_bLearnOnly = FALSE; m_bAutomatic = FALSE; };
 	virtual int GetSkipMode(int nPort) { return (m_bSkipOld && nPort == m_nOldPort) ? m_nOldMode : -1; };
-	virtual void OnFound(const CFoundCamera& cam) { if (!m_bFound && !cam.m_sUrl.IsEmpty()) { m_Result = cam; m_bFound = TRUE; } };
+	virtual void OnFound(const CFoundCamera& cam) { if (!m_bFound && (!cam.m_sUrl.IsEmpty() || cam.m_nMode >= 0)) { m_Result = cam; m_bFound = TRUE; } };
 	virtual void OnStatus(const CString& sStatus) { ; };
 	virtual BOOL IsCancelled() { return m_bCancel; };
 	virtual DWORD GetBatchDelayMs() { return 150; };
@@ -154,12 +157,18 @@ public:
 	int m_nOldMode;
 	CString m_sUser;
 	CString m_sPass;
+	CString m_sFallbackUrl;
+	CString m_sFallbackPath;
+	int m_nFallbackPort;
+	int m_nFallbackMode;
 	HWND m_hNotify;
 	volatile BOOL m_bCancel;
 	BOOL m_bFound;
 	BOOL m_bSkipOld;	// second pass: do not report the stream already in use
 	CFoundCamera m_Result;
-	BOOL m_bSilentApply;	// from the camera's Spy toolbar button: apply what is found without asking, and ignore the "automatic Spy" on/off setting
+	BOOL m_bSilentApply;	// manual Spy action: apply immediately without asking
+	BOOL m_bLearnOnly;	// registration-time probe: save a working alternative without changing the camera
+	BOOL m_bAutomatic;	// timeout recovery: apply silently and preserve linked crop cameras
 };
 
 void StartAutoFix(CAutoFixCtx* pCtx); // deletes pCtx if the thread cannot be started
@@ -180,6 +189,10 @@ public:
 	CString m_sPass;
 	CString m_sDvrHost;
 	int m_nDvrPort;
+	CString m_sSpyFromIp;	// initial IP from Network/IP Camera
+	CString m_sSpyMask;	// optional subnet mask/CIDR
+	CString m_sSpyPorts;	// optional initial port list
+	BOOL m_bAutoScanSpy;	// start Spy immediately after opening
 	BOOL m_bAutoScanLan;	// start scanning the network when the dialog opens
 	BOOL m_bAutoScanDvr;	// start enumerating the DVR channels when the dialog opens
 	BOOL m_bSpy;			// dialog IDD_SPY: sweep of an IP range with ports, maker and transport selection

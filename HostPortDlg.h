@@ -65,6 +65,7 @@ public:
 
 // Returned Data
 public:
+	static CString MakeDevicePathName(const CString& sInHost, int nInPort, int nInDeviceTypeMode);
 	CString m_sHost;
 	int m_nPort;
 	int	m_nDeviceTypeMode;
@@ -76,7 +77,6 @@ protected:
 	int SelectionToDeviceTypeMode();
 	void DeviceTypeModeToSelection(int nDeviceTypeMode);
 	void EnableDisableCtrls();
-	static CString MakeDevicePathName(const CString& sInHost, int nInPort, int nInDeviceTypeMode);
 	static CString GetAssignedDeviceName(const CString& sInHost, int nInPort, int nInDeviceTypeMode);
 	BOOL IsRunning();		// check whether for given m_sHost, m_nPort, m_nDeviceTypeMode there is already a running device
 	void LoadSettings();	// load settings for given m_sHost, m_nPort, m_nDeviceTypeMode
@@ -103,6 +103,7 @@ protected:
 	afx_msg void OnButtonHelp();
 	afx_msg void OnButtonFillFromUrl();
 	afx_msg void OnButtonScanPorts();
+	afx_msg void OnButtonDetectFlows();
 	afx_msg void OnButtonOpenScanLan();
 	afx_msg void OnButtonOpenScanDvr();
 	//}}AFX_MSG

@@ -1,0 +1,579 @@
+diff --git a/CameraScanDlg.cpp b/CameraScanDlg.cpp
+index a6c1a61..92cc4de 100644
+--- a/CameraScanDlg.cpp
++++ b/CameraScanDlg.cpp
+@@ -83,7 +83,7 @@ static const CDvrTemplate DVR_TEMPLATES[] =
+ 	{ _T("/live/ch%02d_0"),							_T("Generic /live/chNN_0") }
+ };
+ static const int DVR_TEMPLATES_COUNT = sizeof(DVR_TEMPLATES) / sizeof(DVR_TEMPLATES[0]);
+-#define DVR_MAX_CHANNELS	32
++#define DVR_MAX_CHANNELS	64
+ 
+ // Camera maker list entries (CHostPortDlg) that are selected from the RTSP path
+ struct CMakerPath
+@@ -1336,13 +1336,14 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
+ 								int nMakerMode,
+ 								const CString& sMakerName,
+ 								const CString& sUser,
+-								const CString& sPass)
++								const CString& sPass,
++									const CArray<int, int>* paMakerModes,
++									const CStringArray* psaMakerNames)
+ {
+ 	CArray<DWORD, DWORD> aHosts;
+-	for (DWORD dwIp = dwFirstIp; dwIp <= dwLastIp && dwIp >= dwFirstIp && aHosts.GetSize() < 1024; dwIp++)
++	for (DWORD dwIp = dwFirstIp; dwIp <= dwLastIp && dwIp >= dwFirstIp && aHosts.GetSize() < 65536; dwIp++)
+ 	{
+-		if ((dwIp & 0xFF) != 0 && (dwIp & 0xFF) != 255) // network and broadcast addresses are skipped
+-			aHosts.Add(dwIp);
++		aHosts.Add(dwIp);
+ 	}
+ 	const int nHostCount = (int)aHosts.GetSize();
+ 	const int nPortCount = (int)aPorts.GetSize();
+@@ -1525,12 +1526,38 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
+ 			cam.m_sHost = sHost;
+ 			cam.m_nPort = nPort;
+ 			cam.m_sType = _T("RTSP");
+-			if (nMakerMode >= 0)
++			if ((paMakerModes && paMakerModes->GetSize() > 0) || nMakerMode >= 0)
+ 			{
+-				// Maker selected: the stream path comes from the camera maker list
+-				cam.m_nMode = nMakerMode;
+-				cam.m_sMaker = sMakerName;
+-				cam.m_sInfo = _T("fabricante: ") + sMakerName;
++				// With multiple choices, test each selected maker on this host/port;
++				// the first path returning 200 wins. Legacy callers still pass one mode.
++				int nSelectedMode = nMakerMode;
++				CString sSelectedName = sMakerName;
++				CString sMakerPath;
++				BOOL bMakerFound = FALSE;
++				int nModeCount = (paMakerModes && paMakerModes->GetSize() > 0) ? (int)paMakerModes->GetSize() : 1;
++				for (int mi = 0; mi < nModeCount; ++mi)
++				{
++					if (sink.IsCancelled()) return;
++					nSelectedMode = (paMakerModes && paMakerModes->GetSize() > 0) ? (*paMakerModes)[mi] : nMakerMode;
++					sSelectedName = (psaMakerNames && mi < psaMakerNames->GetSize()) ? (*psaMakerNames)[mi] : sMakerName;
++					BOOL bCredentialAlreadyAdded = FALSE;
++					sMakerPath = CVideoDeviceDoc::GetRtspPathAndQuery((CVideoDeviceDoc::NetworkDeviceTypeMode)nSelectedMode, TRUE, sUser, sPass, bCredentialAlreadyAdded);
++					if (!sMakerPath.IsEmpty() && RtspDescribe(addr, nAddrLen, sHost, nPort, sMakerPath, sUser, sPass) == 200)
++					{ bMakerFound = TRUE; break; }
++				}
++				if (!bMakerFound)
++				{
++					// Fall back to the automatic stream-path search after all selected makers fail.
++					int nFallback = FindRtspPath(addr, nAddrLen, sHost, nPort, sUser, sPass, CString(), sink, sMakerPath);
++					if (nFallback <= 0) continue;
++					nSelectedMode = ModeFromRtspPath(sMakerPath, &sSelectedName);
++					if (sSelectedName.IsEmpty()) sSelectedName = _T("AutomÃ¡tico");
++				}
++				cam.m_nMode = nSelectedMode;
++				cam.m_sMaker = sSelectedName;
++				int nDummyPort, nDummyMode;
++				CHostPortDlg::MakeUrl(sHost, nPort, sMakerPath, CVideoDeviceDoc::URL_RTSP, cam.m_sUrl, nDummyPort, nDummyMode);
++				cam.m_sInfo.Format(_T("fabricante/caminho: %s, protocolo: RTSP/TCP, PORTA: %d"), sSelectedName, nPort);
+ 				sink.OnFound(cam);
+ 				nFound++;
+ 				break;
+@@ -1575,6 +1602,7 @@ void CCameraScanner::ScanRange(	CScanSink& sink,
+ 			CString sNet;
+ 			if (mapNet.Lookup(sHost, sNet))
+ 				cam.m_sInfo += _T(", ") + sNet;
++			cam.m_sInfo.AppendFormat(_T(", protocolo: RTSP/TCP, PORTA: %d"), nPort);
+ 			mapReported[sHost] = _T("1");
+ 			sink.OnFound(cam);
+ 			nFound++;
+@@ -1624,25 +1652,25 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
+ 	int t;
+ 	for (t = 0; t < DVR_TEMPLATES_COUNT && nTemplate < 0; t++)
+ 	{
+-		if (sink.IsCancelled())
+-			return;
+-		CString sPath;
+-		sPath.Format(DVR_TEMPLATES[t].m_sPath, 1);
+-		int nCode = RtspDescribe(addr, nAddrLen, sHost, nPort, sPath, sUser, sPass);
+-		if (nCode == 200)
+-			nTemplate = t;
+-		else if (nCode == 401)
++		for (int nProbeCh = 1; nProbeCh <= 8 && nTemplate < 0; nProbeCh++)
+ 		{
+-			sink.OnStatus(sUser.IsEmpty() ?	_T("O DVR exige usu\u00e1rio e senha.") :
+-											_T("Login do DVR recusado: verifique usu\u00e1rio e senha."));
+-			return;
+-		}
+-		else if (nCode == 0 && t == 0)
+-		{
+-			CString sMsg;
+-			sMsg.Format(_T("Sem resposta RTSP de %s porta %d."), sHost, nPort);
+-			sink.OnStatus(sMsg);
+-			return;
++			if (sink.IsCancelled()) return;
++			CString sPath;
++			sPath.Format(DVR_TEMPLATES[t].m_sPath, nProbeCh);
++			int nCode = RtspDescribe(addr, nAddrLen, sHost, nPort, sPath, sUser, sPass);
++			if (nCode == 200) nTemplate = t;
++			else if (nCode == 401)
++			{
++				sink.OnStatus(sUser.IsEmpty() ? _T("O DVR exige usuario e senha.") : _T("Login do DVR recusado: verifique usuario e senha."));
++				return;
++			}
++			else if (nCode == 0 && t == 0 && nProbeCh == 1)
++			{
++				CString sMsg;
++				sMsg.Format(_T("Sem resposta RTSP de %s porta %d."), sHost, nPort);
++				sink.OnStatus(sMsg);
++				return;
++			}
+ 		}
+ 	}
+ 	if (nTemplate < 0)
+@@ -1651,8 +1679,8 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
+ 		return;
+ 	}
+ 
+-	// A standalone camera answers every channel path: it is not a DVR/NVR and listing 32
+-	// channels would only repeat the same camera. The cameras of the network are found
++	// A standalone camera answers every channel path: it is not a DVR/NVR and listing 64
++	// channels would only repeat the same camera. The cameras on the network are found
+ 	// by the network scan
+ 	CString sBogusPath;
+ 	sBogusPath.Format(DVR_TEMPLATES[nTemplate].m_sPath, 99);
+@@ -1682,10 +1710,9 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
+ 		return;
+ 	}
+ 
+-	// Enumerate the channels, stop after 4 missing channels in a row
++	// Probe every channel: DVRs can have offline gaps or start with a later channel.
+ 	int nFound = 0;
+-	int nMisses = 0;
+-	for (int nCh = 1; nCh <= DVR_MAX_CHANNELS && nMisses < 4; nCh++)
++	for (int nCh = 1; nCh <= DVR_MAX_CHANNELS; nCh++)
+ 	{
+ 		if (sink.IsCancelled())
+ 			return;
+@@ -1709,10 +1736,7 @@ void CCameraScanner::ScanDvr(	CScanSink& sink,
+ 				cam.m_sInfo += _T(", fabricante: ") + cam.m_sMaker;
+ 			sink.OnFound(cam);
+ 			nFound++;
+-			nMisses = 0;
+ 		}
+-		else
+-			nMisses++;
+ 	}
+ 	CString sDone;
+ 	sDone.Format(_T("Varredura do DVR conclu\u00edda: %d canal(is) encontrado(s)."), nFound);
+@@ -1843,6 +1867,8 @@ struct CScanJob
+ 	CArray<int, int> m_aPorts;
+ 	int m_nMakerMode;
+ 	CString m_sMakerName;
++	CArray<int, int> m_aMakerModes;
++	CStringArray m_saMakerNames;
+ 	BOOL m_bLan;
+ 	BOOL m_bDvr;
+ 	CString m_sHost;
+@@ -1860,14 +1886,28 @@ static UINT DlgScanThreadProc(LPVOID pParam)
+ 	CDlgScanSink sink(pJob->m_hWnd, pJob->m_plCancel);
+ 	if (pJob->m_bSpy)
+ 	{
+-		CCameraScanner::ScanRange(sink, pJob->m_dwFirstIp, pJob->m_dwLastIp, pJob->m_aPorts, pJob->m_nMakerMode, pJob->m_sMakerName, pJob->m_sUser, pJob->m_sPass);
++		if (pJob->m_aMakerModes.GetSize() == 0)
++			CCameraScanner::ScanRange(sink, pJob->m_dwFirstIp, pJob->m_dwLastIp, pJob->m_aPorts, -1, CString(), pJob->m_sUser, pJob->m_sPass);
++		else
++			CCameraScanner::ScanRange(sink, pJob->m_dwFirstIp, pJob->m_dwLastIp, pJob->m_aPorts, -1, CString(), pJob->m_sUser, pJob->m_sPass, &pJob->m_aMakerModes, &pJob->m_saMakerNames);
+ 		::PostMessage(pJob->m_hWnd, WM_SCAN_DONE, 0, 0);
+ 		delete pJob;
+ 		return 0;
+ 	}
+-	// DVR first (fast), then the sweep of the network
++	// A supplied host is checked both for DVR channels and as a standalone IP camera.
+ 	if (pJob->m_bDvr)
+ 		CCameraScanner::ScanDvr(sink, pJob->m_sHost, pJob->m_nPort, pJob->m_sUser, pJob->m_sPass, !pJob->m_bLan);
++	if (pJob->m_bDvr && !pJob->m_bLan && !sink.IsCancelled())
++	{
++		unsigned long ulIp = ::inet_addr(CStringA(pJob->m_sHost));
++		if (ulIp != INADDR_NONE && ulIp != 0)
++		{
++			CArray<int, int> aRtspPorts;
++			for (int i = 0; i < LAN_RTSP_PORTS_COUNT; ++i) aRtspPorts.Add(LAN_PORTS[i]);
++			DWORD dwIp = ntohl(ulIp);
++			CCameraScanner::ScanRange(sink, dwIp, dwIp, aRtspPorts, -1, CString(), pJob->m_sUser, pJob->m_sPass);
++		}
++	}
+ 	if (pJob->m_bLan && !sink.IsCancelled())
+ 	{
+ 		CStringArray saExclude;
+@@ -1945,7 +1985,7 @@ BOOL CCameraScanDlg::OnInitDialog()
+ 		InitSpy();
+ 	EnableDisableCtrls();
+ 	if (m_bAutoScanLan)
+-		StartScan(TRUE, !m_sDvrHost.IsEmpty());
++		StartScan(m_sDvrHost.IsEmpty(), !m_sDvrHost.IsEmpty());
+ 	else if (m_bAutoScanDvr)
+ 		StartScan(FALSE, TRUE);
+ 
+@@ -1967,7 +2007,7 @@ void CCameraScanDlg::AddItem(const CFoundCamera& cam)
+ 	{
+ 		if (m_Items[i].m_sHost == cam.m_sHost &&
+ 			m_Items[i].m_nPort == cam.m_nPort &&
+-			m_Items[i].m_sUrl == cam.m_sUrl)
++			(m_Items[i].m_sUrl == cam.m_sUrl || m_bSpy))
+ 			return;
+ 	}
+ 
+@@ -2063,11 +2103,11 @@ void CCameraScanDlg::OnButtonScanLan()
+ 		StartSpyScan();
+ 		return;
+ 	}
+-	// Empty IP field: sweep the whole network. IP given: sweep the network and scan that DVR
++	// Empty IP field: sweep the whole local network. If an IP is supplied, scan only that host.
+ 	CString sIp;
+ 	GetDlgItem(IDC_EDIT_SCAN_DVR)->GetWindowText(sIp);
+ 	sIp.Trim();
+-	StartScan(TRUE, !sIp.IsEmpty());
++	StartScan(sIp.IsEmpty(), !sIp.IsEmpty());
+ }
+ 
+ void CCameraScanDlg::OnButtonScanDvr()
+@@ -2117,7 +2157,12 @@ void CCameraScanDlg::OnOK()
+ 	if (m_bSpy)
+ 	{
+ 		SaveSpySettings();
+-		m_nSpyTransport = (((CComboBox*)GetDlgItem(IDC_SPY_TRANSPORT))->GetCurSel() == 2) ? 0 : 1; // automatic and TCP: TCP first
++		CListBox* pTransport = (CListBox*)GetDlgItem(IDC_SPY_TRANSPORT);
++		BOOL bAuto = pTransport->GetSel(0) > 0, bTcp = pTransport->GetSel(1) > 0;
++		BOOL bUdp = pTransport->GetSel(2) > 0, bDefault = pTransport->GetSel(3) > 0;
++		// Priority: camera default wins if selected; UDP is forced only when UDP is the sole
++		// explicit choice; every other combination (including TCP or automatic) uses TCP then UDP.
++		m_nSpyTransport = bDefault ? -1 : ((bUdp && !bTcp && !bAuto) ? 0 : 1);
+ 	}
+ 	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(m_sUser);
+ 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(m_sPass);
+@@ -2183,50 +2228,46 @@ void CCameraScanDlg::InitSpy()
+ {
+ 	CWinApp* pApp = ::AfxGetApp();
+ 
+-	// First and last IP (full addresses), the default is the range .1 to .100 of the first local network
++	// Empty IP scans the local subnet; mask is optional (dotted decimal or CIDR).
+ 	CString sFrom = pApp->GetProfileString(_T("SpyDlg"), _T("FromIp"), _T(""));
+ 	CString sTo = pApp->GetProfileString(_T("SpyDlg"), _T("ToIp"), _T(""));
+-	if (sFrom.IsEmpty() || sTo.IsEmpty())
+-	{
+-		CArray<DWORD, DWORD> aIps;
+-		CArray<DWORD, DWORD> aMasks;
+-		GetLocalIpv4(aIps, aMasks);
+-		if (aIps.GetSize() > 0)
+-		{
+-			sFrom.Format(_T("%u.%u.%u.1"), (aIps[0] >> 24) & 0xFF, (aIps[0] >> 16) & 0xFF, (aIps[0] >> 8) & 0xFF);
+-			sTo.Format(_T("%u.%u.%u.100"), (aIps[0] >> 24) & 0xFF, (aIps[0] >> 16) & 0xFF, (aIps[0] >> 8) & 0xFF);
+-		}
+-	}
++	CString sMask = pApp->GetProfileString(_T("SpyDlg"), _T("Mask"), _T(""));
+ 	GetDlgItem(IDC_SPY_FROM)->SetWindowText(sFrom);
+ 	GetDlgItem(IDC_SPY_TO)->SetWindowText(sTo);
++	GetDlgItem(IDC_SPY_MASK)->SetWindowText(sMask);
+ 	GetDlgItem(IDC_SPY_PORTS)->SetWindowText(pApp->GetProfileString(_T("SpyDlg"), _T("Ports"), _T("554, 10554, 8554, 5543, 5544, 555, 7070, 88, 8000")));
+ 
+ 	// Camera makers: the first entry is the automatic mode
+-	CComboBox* pMaker = (CComboBox*)GetDlgItem(IDC_SPY_MAKER);
+-	int nIndex = pMaker->AddString(_T("Autom\u00e1tico (procura o caminho)"));
+-	pMaker->SetItemData(nIndex, (DWORD_PTR)-1);
++	CListBox* pMaker = (CListBox*)GetDlgItem(IDC_SPY_MAKER);
++
+ 	CArray<CDeviceTypeModePair> a;
+ 	CHostPortDlg::InitDeviceTypeModeArrayForCB(a);
+-	int nSel = 0;
+-	int nSavedMode = pApp->GetProfileInt(_T("SpyDlg"), _T("Maker"), -1);
++	CString sSavedModes = pApp->GetProfileString(_T("SpyDlg"), _T("Makers"), _T(""));
+ 	for (int i = 0; i < a.GetSize(); i++)
+ 	{
+ 		if (a[i].m_dwMode >= (DWORD)CVideoDeviceDoc::URL_RTSP)
+ 		{
+-			nIndex = pMaker->AddString(a[i].m_sMode);
++			int nIndex = pMaker->AddString(a[i].m_sMode);
+ 			pMaker->SetItemData(nIndex, (DWORD_PTR)a[i].m_dwMode);
+-			if ((int)a[i].m_dwMode == nSavedMode)
+-				nSel = nIndex;
++			CString sMode;
++			sMode.Format(_T(",%u,"), a[i].m_dwMode);
++			CString sSearch(_T(",") + sSavedModes + _T(","));
++			if (!sSavedModes.IsEmpty() && sSearch.Find(sMode) >= 0)
++				pMaker->SetSel(nIndex);
+ 		}
+ 	}
+-	pMaker->SetCurSel(nSel);
+ 
+-	// Transport
+-	CComboBox* pTransport = (CComboBox*)GetDlgItem(IDC_SPY_TRANSPORT);
++
++	// Transport choices are independently selectable and persisted as a bit mask.
++	CListBox* pTransport = (CListBox*)GetDlgItem(IDC_SPY_TRANSPORT);
+ 	pTransport->AddString(_T("Autom\u00e1tico (TCP, sen\u00e3o UDP)"));
+ 	pTransport->AddString(_T("TCP"));
+ 	pTransport->AddString(_T("UDP"));
+-	pTransport->SetCurSel(pApp->GetProfileInt(_T("SpyDlg"), _T("Transport"), 0));
++	pTransport->AddString(_T("Padr\u00e3o da c\u00e2mera (sem for\u00e7ar)"));
++	int nTransport = pApp->GetProfileInt(_T("SpyDlg"), _T("Transport"), 1);
++	if (nTransport < 0 || nTransport > 15 || nTransport == 0) nTransport = 1; // legacy automatic default
++	for (int i = 0; i < 4; ++i)
++		if (nTransport & (1 << i)) pTransport->SetSel(i);
+ }
+ 
+ void CCameraScanDlg::SaveSpySettings()
+@@ -2237,12 +2278,26 @@ void CCameraScanDlg::SaveSpySettings()
+ 	pApp->WriteProfileString(_T("SpyDlg"), _T("FromIp"), s);
+ 	GetDlgItem(IDC_SPY_TO)->GetWindowText(s);
+ 	pApp->WriteProfileString(_T("SpyDlg"), _T("ToIp"), s);
++	GetDlgItem(IDC_SPY_MASK)->GetWindowText(s);
++	pApp->WriteProfileString(_T("SpyDlg"), _T("Mask"), s);
+ 	GetDlgItem(IDC_SPY_PORTS)->GetWindowText(s);
+ 	pApp->WriteProfileString(_T("SpyDlg"), _T("Ports"), s);
+-	CComboBox* pMaker = (CComboBox*)GetDlgItem(IDC_SPY_MAKER);
+-	if (pMaker->GetCurSel() >= 0)
+-		pApp->WriteProfileInt(_T("SpyDlg"), _T("Maker"), (int)pMaker->GetItemData(pMaker->GetCurSel()));
+-	pApp->WriteProfileInt(_T("SpyDlg"), _T("Transport"), ((CComboBox*)GetDlgItem(IDC_SPY_TRANSPORT))->GetCurSel());
++	CListBox* pMaker = (CListBox*)GetDlgItem(IDC_SPY_MAKER);
++	CString sModes;
++	for (int i = 0; i < pMaker->GetCount(); ++i)
++	{
++		if (pMaker->GetSel(i) > 0)
++		{
++			CString sMode;
++			sMode.Format(_T("%s%u"), sModes.IsEmpty() ? _T("") : _T(","), (unsigned)pMaker->GetItemData(i));
++			sModes += sMode;
++		}
++	}
++	pApp->WriteProfileString(_T("SpyDlg"), _T("Makers"), sModes);
++	CListBox* pTransport = (CListBox*)GetDlgItem(IDC_SPY_TRANSPORT);
++	int nTransport = 0;
++	for (int i = 0; i < 4; ++i) if (pTransport->GetSel(i) > 0) nTransport |= (1 << i);
++	pApp->WriteProfileInt(_T("SpyDlg"), _T("Transport"), nTransport);
+ }
+ 
+ void CCameraScanDlg::StartSpyScan()
+@@ -2251,28 +2306,86 @@ void CCameraScanDlg::StartSpyScan()
+ 	GetDlgItem(IDC_AUTH_USERNAME)->GetWindowText(m_sUser);
+ 	GetDlgItem(IDC_AUTH_PASSWORD)->GetWindowText(m_sPass);
+ 
+-	// First and last IP, for example 192.168.1.0 to 192.168.1.10
+-	CString sFrom, sTo;
++	// Empty IP scans the first local subnet. An IP alone scans that host; with a mask it scans the subnet.
++	CString sFrom, sTo, sMask;
+ 	GetDlgItem(IDC_SPY_FROM)->GetWindowText(sFrom);
+ 	GetDlgItem(IDC_SPY_TO)->GetWindowText(sTo);
+-	sFrom.Trim();
+-	sTo.Trim();
+-	unsigned long ulFrom = ::inet_addr(CStringA(sFrom));
+-	unsigned long ulTo = ::inet_addr(CStringA(sTo));
+-	if (ulFrom == INADDR_NONE || ulTo == INADDR_NONE || ulFrom == 0 || ulTo == 0)
++	GetDlgItem(IDC_SPY_MASK)->GetWindowText(sMask);
++	sFrom.Trim(); sTo.Trim(); sMask.Trim();
++	DWORD dwFrom = 0, dwTo = 0;
++	if (sFrom.IsEmpty())
+ 	{
+-		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("IP inv\u00e1lido: digite o IP completo, por exemplo 192.168.1.0 e 192.168.1.10"));
+-		return;
++		CArray<DWORD, DWORD> aIps, aMasks;
++		GetLocalIpv4(aIps, aMasks);
++		if (aIps.GetSize() == 0)
++		{
++			GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Nenhuma interface IPv4 local encontrada."));
++			return;
++		}
++		DWORD dwMask = aMasks[0];
++		dwFrom = (aIps[0] & dwMask) + 1;
++		dwTo = (aIps[0] | ~dwMask) - 1;
++	}
++	else
++	{
++		unsigned long ulFrom = ::inet_addr(CStringA(sFrom));
++		if (ulFrom == INADDR_NONE || ulFrom == 0)
++		{
++			GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Endereco IPv4 invalido."));
++			return;
++		}
++		DWORD dwIp = ntohl(ulFrom);
++		if (!sMask.IsEmpty())
++		{
++			DWORD dwMask = 0;
++			if (sMask[0] == _T('/'))
++			{
++				int nPrefix = _ttoi(sMask.Mid(1));
++				if (nPrefix < 0 || nPrefix > 32)
++				{
++					GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Mascara CIDR invalida; use /0 a /32."));
++					return;
++				}
++				dwMask = (nPrefix == 0) ? 0 : (0xFFFFFFFFUL << (32 - nPrefix));
++			}
++			else
++			{
++				unsigned long ulMask = ::inet_addr(CStringA(sMask));
++				if (ulMask == INADDR_NONE)
++				{
++					GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Mascara invalida; use 255.255.255.0 ou /24."));
++					return;
++				}
++				dwMask = ntohl(ulMask);
++			}
++			DWORD dwInvMask = ~dwMask;
++			if ((dwInvMask & (dwInvMask + 1)) != 0)
++			{
++				GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Mascara de rede invalida."));
++				return;
++			}
++			if (dwMask == 0xFFFFFFFFUL) dwFrom = dwTo = dwIp;
++			else if (dwMask == 0xFFFFFFFEUL) { dwFrom = dwIp & dwMask; dwTo = dwFrom + 1; }
++			else { dwFrom = (dwIp & dwMask) + 1; dwTo = (dwIp | ~dwMask) - 1; }
++		}
++		else if (sTo.IsEmpty()) dwFrom = dwTo = dwIp;
++		else
++		{
++			unsigned long ulTo = ::inet_addr(CStringA(sTo));
++			if (ulTo == INADDR_NONE || ulTo == 0)
++			{
++				GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("Endereco IPv4 final invalido."));
++				return;
++			}
++			dwFrom = dwIp; dwTo = ntohl(ulTo);
++		}
+ 	}
+-	DWORD dwFrom = ntohl(ulFrom);
+-	DWORD dwTo = ntohl(ulTo);
+ 	if (dwFrom > dwTo)
+ 	{
+-		DWORD dwTmp = dwFrom;
+-		dwFrom = dwTo;
+-		dwTo = dwTmp;
++		GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(_T("A mascara ou faixa nao contem enderecos de host."));
++		return;
+ 	}
+-
++	if (dwTo - dwFrom >= 65536) dwTo = dwFrom + 65535; // maximum 65,536 targets per run
+ 	CScanJob* pJob = new CScanJob;
+ 	pJob->m_bSpy = TRUE;
+ 	pJob->m_bLan = FALSE;
+@@ -2288,12 +2401,17 @@ void CCameraScanDlg::StartSpyScan()
+ 		delete pJob;
+ 		return;
+ 	}
+-	CComboBox* pMaker = (CComboBox*)GetDlgItem(IDC_SPY_MAKER);
++	CListBox* pMaker = (CListBox*)GetDlgItem(IDC_SPY_MAKER);
+ 	pJob->m_nMakerMode = -1;
+-	if (pMaker->GetCurSel() > 0)
++	for (int mi = 0; mi < pMaker->GetCount(); ++mi)
+ 	{
+-		pJob->m_nMakerMode = (int)pMaker->GetItemData(pMaker->GetCurSel());
+-		pMaker->GetLBText(pMaker->GetCurSel(), pJob->m_sMakerName);
++		if (pMaker->GetSel(mi) > 0)
++		{
++			pJob->m_aMakerModes.Add((int)pMaker->GetItemData(mi));
++			CString sMaker;
++			pMaker->GetText(mi, sMaker);
++			pJob->m_saMakerNames.Add(sMaker);
++		}
+ 	}
+ 	pJob->m_sUser = m_sUser;
+ 	pJob->m_sPass = m_sPass;
+@@ -2309,6 +2427,11 @@ void CCameraScanDlg::StartSpyScan()
+ 		return;
+ 	}
+ 	m_pScanThread->m_bAutoDelete = FALSE;
++	CString sCount;
++	unsigned long nTargets = (unsigned long)(dwTo - dwFrom + 1);
++	if (nTargets > 65536) nTargets = 65536;
++	sCount.Format(_T("Varrendo %lu endereco(s) IP..."), nTargets);
++	GetDlgItem(IDC_STATIC_SCAN_STATUS)->SetWindowText(sCount);
+ 	m_pScanThread->ResumeThread();
+ 	m_bScanning = TRUE;
+ 	EnableDisableCtrls();
+diff --git a/CameraScanDlg.h b/CameraScanDlg.h
+index f695b0e..53be520 100644
+--- a/CameraScanDlg.h
++++ b/CameraScanDlg.h
+@@ -86,7 +86,9 @@ public:
+ 						  int nMakerMode,
+ 						  const CString& sMakerName,
+ 						  const CString& sUser,
+-						  const CString& sPass);
++						  const CString& sPass,
++						  const CArray<int, int>* paMakerModes = NULL,
++						  const CStringArray* psaMakerNames = NULL);
+ 
+ 	// Entry of the camera maker list that uses the given RTSP path, -1 if there is none
+ 	// Same as ScanRange with an explicit list of hosts (host byte order), up to 65536 hosts
+diff --git a/resource.h b/resource.h
+index ff2054a..c7d5ec9 100644
+--- a/resource.h
++++ b/resource.h
+@@ -3270,6 +3270,7 @@
+ #define IDC_SPY_PORTS                   2615
+ #define IDC_SPY_MAKER                   2616
+ #define IDC_SPY_TRANSPORT               2617
++#define IDC_SPY_MASK                    2618
+ #define ID_SPY                          33557
+ #define ID_DVR_OFF                      33558
+ #define ID_DVR_COLUMN                   33559
+diff --git a/uImager.rc b/uImager.rc
+index 5d0aa17..9a55551 100644
+--- a/uImager.rc
++++ b/uImager.rc
+@@ -1049,32 +1049,34 @@ BEGIN
+     PUSHBUTTON      "Fechar",IDCANCEL,213,184,80,18
+ END
+ 
+-IDD_SPY DIALOGEX 0, 0, 330, 268
+-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+-CAPTION "Spy - procurar câmeras na rede"
+-FONT 8, "MS Shell Dlg", 0, 0, 0x1
+-BEGIN
+-    LTEXT           "IPs: 192.168.1.1-50 ou 192.168.1.*",IDC_STATIC,7,7,160,8
+-    EDITTEXT        IDC_SPY_FROM,7,18,150,13,ES_AUTOHSCROLL
+-    LTEXT           "IP final (opcional)",IDC_STATIC,173,7,150,8
+-    EDITTEXT        IDC_SPY_TO,173,18,150,13,ES_AUTOHSCROLL
+-    LTEXT           "Portas (muda para a próxima se uma não funcionar)",IDC_STATIC,7,38,200,8
+-    EDITTEXT        IDC_SPY_PORTS,7,49,316,13,ES_AUTOHSCROLL
+-    LTEXT           "Marca / modelo",IDC_STATIC,7,69,100,8
+-    COMBOBOX        IDC_SPY_MAKER,7,80,205,200,CBS_DROPDOWNLIST | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
+-    LTEXT           "Transporte",IDC_STATIC,222,69,100,8
+-    COMBOBOX        IDC_SPY_TRANSPORT,222,80,101,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+-    LTEXT           "Usuário",IDC_STATIC,7,100,30,8
+-    EDITTEXT        IDC_AUTH_USERNAME,40,98,80,13,ES_AUTOHSCROLL
+-    LTEXT           "Senha",IDC_STATIC,135,100,26,8
+-    EDITTEXT        IDC_AUTH_PASSWORD,165,98,80,13,ES_PASSWORD | ES_AUTOHSCROLL
+-    PUSHBUTTON      "Iniciar",IDC_BUTTON_SCAN_LAN,7,118,60,16
+-    PUSHBUTTON      "Parar",IDC_BUTTON_SCAN_STOP,72,118,50,16
+-    LTEXT           "",IDC_STATIC_SCAN_STATUS,7,140,316,10,SS_ENDELLIPSIS
+-    CONTROL         "",IDC_LIST_FOUND_CAMERAS,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP,7,153,316,86
+-    DEFPUSHBUTTON   "Abrir marcadas",IDOK,7,245,90,16
+-    PUSHBUTTON      "Fechar",IDCANCEL,233,245,90,16
+-END
++IDD_SPY DIALOGEX 0, 0, 330, 290
++STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
++CAPTION "Spy - procurar câmeras na rede"
++FONT 8, "MS Shell Dlg", 0, 0, 0x1
++BEGIN
++    LTEXT           "IP base (vazio = LAN)",IDC_STATIC,7,7,110,8
++    EDITTEXT        IDC_SPY_FROM,7,18,110,13,ES_AUTOHSCROLL
++    LTEXT           "Mascara CIDR / IPv4",IDC_STATIC,123,7,100,8
++    EDITTEXT        IDC_SPY_MASK,123,18,100,13,ES_AUTOHSCROLL
++    LTEXT           "IP final (opcional)",IDC_STATIC,229,7,94,8
++    EDITTEXT        IDC_SPY_TO,229,18,94,13,ES_AUTOHSCROLL
++    LTEXT           "Portas (muda para a próxima se uma não funcionar)",IDC_STATIC,7,38,200,8
++    EDITTEXT        IDC_SPY_PORTS,7,49,316,13,ES_AUTOHSCROLL
++    LTEXT           "Marca / modelo",IDC_STATIC,7,69,100,8
++    LISTBOX         IDC_SPY_MAKER,7,80,205,39,LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP | WS_BORDER
++    LTEXT           "Transporte (multiplo)",IDC_STATIC,222,69,101,8
++    LISTBOX         IDC_SPY_TRANSPORT,222,80,101,39,LBS_EXTENDEDSEL | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP | WS_BORDER
++    LTEXT           "Usuário",IDC_STATIC,7,128,30,8
++    EDITTEXT        IDC_AUTH_USERNAME,40,126,80,13,ES_AUTOHSCROLL
++    LTEXT           "Senha",IDC_STATIC,135,128,26,8
++    EDITTEXT        IDC_AUTH_PASSWORD,165,126,80,13,ES_PASSWORD | ES_AUTOHSCROLL
++    PUSHBUTTON      "Iniciar",IDC_BUTTON_SCAN_LAN,7,146,60,16
++    PUSHBUTTON      "Parar",IDC_BUTTON_SCAN_STOP,72,146,50,16
++    LTEXT           "",IDC_STATIC_SCAN_STATUS,7,168,316,10,SS_ENDELLIPSIS
++    CONTROL         "",IDC_LIST_FOUND_CAMERAS,"SysListView32",LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | WS_BORDER | WS_TABSTOP,7,181,316,76
++    DEFPUSHBUTTON   "Abrir marcadas",IDOK,7,266,90,16
++    PUSHBUTTON      "Fechar",IDCANCEL,233,266,90,16
++END
+ 
+ IDD_CAMERAADVANCEDSETTINGS DIALOGEX 0, 0, 422, 283
+ STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU

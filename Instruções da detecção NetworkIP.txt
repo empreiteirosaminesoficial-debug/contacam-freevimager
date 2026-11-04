@@ -1,0 +1,9 @@
+Network/IP Camera — detecção de portas e fluxos
+
+1. Na janela Network/IP Camera, informe o IP da câmera e, se necessário, o usuário e a senha.
+2. O campo “Máscara / CIDR” é opcional. Vazio, a busca fica limitada ao IP informado. Preenchido (por exemplo, 255.255.255.0 ou /24), a varredura usa a faixa de rede correspondente. Use uma faixa pequena e somente em redes/dispositivos que você administra ou tem autorização para testar.
+3. Clique “Detectar fluxos”. O Spy Scan abre já preenchido e inicia a busca. Ele testa a porta atual e portas comuns RTSP/HTTP/serviços de câmera, incluindo 443, 500 e 5000.
+4. A lista mostra endereço/porta, tipo e informações. RTSP aparece quando o DESCRIBE confirma um fluxo. HTTP/MJPEG ou JPEG só aparece como fluxo quando a resposta inclui conteúdo de imagem compatível. “TCP aberto” significa somente que a porta aceitou conexão; não confirma vídeo. Na porta 443, TLS/HTTPS é uma hipótese pelo número da porta, não uma confirmação criptográfica.
+5. Selecione apenas fluxos de vídeo confirmados que deseja abrir. Resultados de serviços TCP não identificados não são selecionáveis como câmeras.
+
+Limites: a varredura só identifica protocolos, caminhos e fabricantes que o ContaCam conhece. Uma resposta RTSP DESCRIBE confirma que o endpoint responde, mas não garante estabilidade prolongada nem comprova que a reprodução/decodificação continuará saudável. A lista é apresentada pelo Spy Scan; esta etapa não configura sozinha uma fila persistente de failover automático para a câmera. A compilação Windows/MFC e o teste em câmeras reais precisam ser feitos no ambiente Visual Studio.
