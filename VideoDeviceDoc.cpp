@@ -16,6 +16,7 @@
 #include "MotionDetHelpers.h"
 #include "Base64.h"
 #include "CMD5.h"
+#include "CameraScanDlg.h"
 #include "CSHA256.h"
 #include "Psapi.h"
 #include "NoVistaFileDlg.h"
@@ -56,6 +57,12 @@ BEGIN_MESSAGE_MAP(CVideoDeviceDoc, CUImagerDoc)
 	ON_UPDATE_COMMAND_UI(ID_CAPTURE_CAMERASETTINGS, OnUpdateCaptureCameraSettings)
 	ON_UPDATE_COMMAND_UI(ID_EDIT_FRAMESTAMP, OnUpdateEditFrameStamp)
 	ON_UPDATE_COMMAND_UI(ID_CAPTURE_RECORD, OnUpdateCaptureRecord)
+	ON_COMMAND(ID_CAPTURE_SPY, OnCaptureSpy)
+	ON_UPDATE_COMMAND_UI(ID_CAPTURE_SPY, OnUpdateCaptureSpy)
+	ON_COMMAND(ID_CAPTURE_NETWORK_EDIT, OnCaptureNetworkEdit)
+	ON_UPDATE_COMMAND_UI(ID_CAPTURE_NETWORK_EDIT, OnUpdateCaptureNetworkEdit)
+	ON_COMMAND(ID_CAPTURE_DELETE_CAMERA, OnCaptureDeleteCamera)
+	ON_UPDATE_COMMAND_UI(ID_CAPTURE_DELETE_CAMERA, OnUpdateCaptureDeleteCamera)
 	ON_COMMAND(ID_SENSITIVITY_0, OnMovDetSensitivity0)
 	ON_UPDATE_COMMAND_UI(ID_SENSITIVITY_0, OnUpdateMovDetSensitivity0)
 	ON_COMMAND(ID_SENSITIVITY_5, OnMovDetSensitivity5)
@@ -2634,6 +2641,10 @@ int CVideoDeviceDoc::CRtspThread::Work()
 	// Init COM for audio play
 	::CoInitialize(NULL);
 
+	// TRUE if the last connection streamed: a camera that was ON and drops is reconnected after a few
+	// seconds instead of waiting the whole RTSP_CONNECTION_TIMEOUT_SEC (45 s) of a camera that never answered
+	BOOL bWasStreaming = FALSE;
+
 	for (;;)
 	{
 		int ret = 0;
@@ -2655,10 +2666,20 @@ int CVideoDeviceDoc::CRtspThread::Work()
 
 		// Options var
 		AVDictionary* opts = NULL;
+		AVDictionary* optsFallback = NULL; // copy of opts used to retry when the camera refuses TCP
+		BOOL bTcpFallback = FALSE;
 
 		// If set, and if TCP is available as RTSP transport, then TCP will be tried first instead of UDP
 		if (m_pDoc->m_bPreferTcpforRtsp)
+		{
 			av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);
+
+			// Offer only TCP in the SETUP request: some cameras (Yoosee/Gwell) answer
+			// '400 Bad Request' when the Transport header lists several alternatives
+			// (TCP and UDP). If the camera refuses it we retry below with UDP
+			if (!m_pDoc->m_bUdpMulticastforRtsp)
+				av_dict_set(&opts, "rtsp_transport", "tcp", 0);
+		}
 		
 		// Use UDP Multicast as RTSP transport
 		// Attention: when both prefer_tcp and udp_multicast are set, ffmpeg chooses UDP multicast and
@@ -2692,7 +2713,30 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		// Open rtsp
 		CStringA sAnsiURL(m_sURL);
 		pFormatCtx->probesize = 10000000; // the default of 5000000 bytes is too low
-		if ((ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts)) < 0)
+		bTcpFallback = (m_pDoc->m_bPreferTcpforRtsp && !m_pDoc->m_bUdpMulticastforRtsp);
+		if (bTcpFallback)
+			av_dict_copy(&optsFallback, opts, 0);
+		ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		if (ret < 0 && bTcpFallback && !DoExit())
+		{
+			// Some cameras do not support RTSP over TCP and answer with 400 Bad Request:
+			// retry with the default transport (UDP) instead of failing
+			::LogLine(_T("%s, RTSP over TCP refused, retrying with UDP"), m_pDoc->GetAssignedDeviceName());
+			av_dict_free(&opts);
+			opts = optsFallback;
+			optsFallback = NULL;
+			av_dict_set(&opts, "rtsp_flags", NULL, 0); // remove prefer_tcp
+			av_dict_set(&opts, "rtsp_transport", NULL, 0); // remove tcp
+			pFormatCtx = avformat_alloc_context();
+			if (!pFormatCtx)
+			{
+				ret = AVERROR(ENOMEM);
+				goto free;
+			}
+			pFormatCtx->probesize = 10000000;
+			ret = avformat_open_input(&pFormatCtx, sAnsiURL, NULL, &opts);
+		}
+		if (ret < 0)
 			goto free;
 
 		// Search video and audio streams for which we have decoders
@@ -2770,7 +2814,9 @@ int CVideoDeviceDoc::CRtspThread::Work()
 
 		// Get frames
 		llLastOKUpTime = (LONGLONG)::GetTickCount64();
+		bWasStreaming = TRUE;
 		int64_t llPrevPts = AV_NOPTS_VALUE;
+		int nCorruptSkipped = 0; // consecutive frames not shown because of packet loss
 		for (;;)
 		{
 			AVPacket avpkt;
@@ -2841,6 +2887,20 @@ int CVideoDeviceDoc::CRtspThread::Work()
 						goto packet_free;
 					}
 					decoded = MIN(ret, avpkt.size);
+
+					// With the UDP transport lost packets produce frames with garbled areas (typical
+					// for 1080p H.265 over Wi-Fi): do not show them, the last good frame stays on
+					// screen. After 30 frames in a row we show them anyway to not freeze the image
+					if (got_picture)
+					{
+						if (pVideoFrame->decode_error_flags != 0 && nCorruptSkipped < 30)
+						{
+							nCorruptSkipped++;
+							got_picture = 0;
+						}
+						else
+							nCorruptSkipped = 0;
+					}
 
 					// Convert and Process
 					if (got_picture)
@@ -3173,6 +3233,7 @@ int CVideoDeviceDoc::CRtspThread::Work()
 		if (pFormatCtx)
 			avformat_close_input(&pFormatCtx);
 		av_dict_free(&opts);
+		av_dict_free(&optsFallback);
 		if (pAudioPlay)
 			delete pAudioPlay;
 		if (pAudioTools)
@@ -3206,8 +3267,17 @@ int CVideoDeviceDoc::CRtspThread::Work()
 			}
 			m_pDoc->ConnectErr(sErrorMsg, m_pDoc->GetDeviceName());
 
-			// Wait some time before reconnecting
-			if (::WaitForSingleObject(m_hKillEvent, RTSP_CONNECTION_TIMEOUT_SEC * 1000) == WAIT_OBJECT_0)
+			// Log why the connection ended (to find out which cameras drop and how often)
+			{
+				CString sAvErr;
+				::AVErrorToString(ret, sAvErr);
+				::LogLine(_T("%s, %s: %s (%s)"), m_pDoc->GetAssignedDeviceName(), bWasStreaming ? _T("connection lost") : _T("cannot connect"), sErrorMsg, sAvErr);
+			}
+
+			// Wait some time before reconnecting (short after a drop of a working connection)
+			DWORD dwReconnectWaitMs = bWasStreaming ? 3000 : RTSP_CONNECTION_TIMEOUT_SEC * 1000;
+			bWasStreaming = FALSE;
+			if (::WaitForSingleObject(m_hKillEvent, dwReconnectWaitMs) == WAIT_OBJECT_0)
 				goto exit;
 
 			// Clear error and then loop to reconnect
@@ -3220,6 +3290,237 @@ exit:
 	return 0;
 }
 
+// Crop manager
+CCropManager g_CropManager;
+
+// Unsharp mask on the Y plane (nAmount in percent, 100 = classic strength)
+static void CropSharpenLuma(BYTE* pY, int w, int h, int nAmount, std::vector<BYTE>& Tmp)
+{
+	if (w < 3 || h < 3 || nAmount <= 0)
+		return;
+	Tmp.assign(pY, pY + (size_t)w * h);
+	const BYTE* s = &Tmp[0];
+	for (int y = 1 ; y < h - 1 ; y++)
+	{
+		for (int x = 1 ; x < w - 1 ; x++)
+		{
+			int c = s[y * w + x];
+			int lap = 4 * c - s[y * w + x - 1] - s[y * w + x + 1] - s[(y - 1) * w + x] - s[(y + 1) * w + x];
+			int v = c + lap * nAmount / 400;
+			pY[y * w + x] = (BYTE)(v < 0 ? 0 : (v > 255 ? 255 : v));
+		}
+	}
+}
+
+CCropManager::CCropManager()
+{
+	::InitializeCriticalSection(&m_cs);
+	m_nCount = 0;
+}
+
+CCropManager::~CCropManager()
+{
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+		delete m_List[i];
+	m_List.clear();
+	::DeleteCriticalSection(&m_cs);
+}
+
+BOOL CCropManager::Link(CVideoDeviceDoc* pSrc, CVideoDeviceDoc* pDst, int nL, int nT, int nR, int nB)
+{
+	if (!pSrc || !pDst || pSrc == pDst || nR <= nL || nB <= nT)
+		return FALSE;
+	BOOL bRet = TRUE;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pDst == pDst)
+		{
+			bRet = FALSE; // already linked
+			break;
+		}
+	}
+	if (bRet)
+	{
+		CEntry* p = new CEntry;
+		p->m_pSrc = pSrc;
+		p->m_pDst = pDst;
+		p->m_nL = nL;
+		p->m_nT = nT;
+		p->m_nR = nR;
+		p->m_nB = nB;
+		p->m_nBusy = 0;
+		m_List.push_back(p);
+		m_nCount = (int)m_List.size();
+	}
+	::LeaveCriticalSection(&m_cs);
+	return bRet;
+}
+
+BOOL CCropManager::IsLinked(CVideoDeviceDoc* pDst)
+{
+	BOOL bRet = FALSE;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pDst == pDst)
+		{
+			bRet = TRUE;
+			break;
+		}
+	}
+	::LeaveCriticalSection(&m_cs);
+	return bRet;
+}
+
+void CCropManager::Remove(CVideoDeviceDoc* pDoc)
+{
+	if (m_nCount == 0)
+		return;
+
+	// Detach the entries, from now on Feed() cannot find them anymore
+	std::vector<CEntry*> Removed;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; )
+	{
+		if (m_List[i]->m_pSrc == pDoc || m_List[i]->m_pDst == pDoc)
+		{
+			Removed.push_back(m_List[i]);
+			m_List.erase(m_List.begin() + i);
+		}
+		else
+			i++;
+	}
+	m_nCount = (int)m_List.size();
+	::LeaveCriticalSection(&m_cs);
+
+	// Wait for the Feed() calls in progress (keep serving the messages sent to this thread)
+	for (size_t i = 0 ; i < Removed.size() ; i++)
+	{
+		while (Removed[i]->m_nBusy > 0)
+		{
+			MSG msg;
+			::PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+			::MsgWaitForMultipleObjects(0, NULL, FALSE, 1, QS_SENDMESSAGE);
+		}
+		delete Removed[i];
+	}
+}
+
+// Called from the camera thread of pSrc with a frame in I420 format (packed planes)
+void CCropManager::Feed(CVideoDeviceDoc* pSrc, const BYTE* pI420, int nWidth, int nHeight, LONGLONG llPtsMs)
+{
+	if (m_nCount == 0 || !pI420 || nWidth < 16 || nHeight < 16)
+		return;
+
+	// Pick the entries of this source and mark them as busy
+	std::vector<CEntry*> Todo;
+	::EnterCriticalSection(&m_cs);
+	for (size_t i = 0 ; i < m_List.size() ; i++)
+	{
+		if (m_List[i]->m_pSrc == pSrc)
+		{
+			::InterlockedIncrement(&m_List[i]->m_nBusy);
+			Todo.push_back(m_List[i]);
+		}
+	}
+	::LeaveCriticalSection(&m_cs);
+
+	// Crop and hand over
+	std::vector<BYTE> Buf;
+	std::vector<BYTE> Out;
+	std::vector<BYTE> Tmp;
+	for (size_t i = 0 ; i < Todo.size() ; i++)
+	{
+		CEntry* p = Todo[i];
+
+		// The crop runs inside the capture thread of the source camera: the enlargement (Lanczos) and the
+		// sharpening cost tens of ms per frame, and a source thread that falls behind stops reading from the
+		// camera, which then drops the connection. So a crop is updated at most 10 times per second
+		ULONGLONG ullNow = ::GetTickCount64();
+		if (p->m_ullLastFeed != 0 && ullNow - p->m_ullLastFeed < 100)
+		{
+			::InterlockedDecrement(&p->m_nBusy);
+			continue;
+		}
+		p->m_ullLastFeed = ullNow;
+
+		// Even offset and size multiple of 4 (I420 needs even values, codecs like multiples of 4)
+		int x = ((int)((LONGLONG)nWidth * p->m_nL / 10000)) & ~1;
+		int y = ((int)((LONGLONG)nHeight * p->m_nT / 10000)) & ~1;
+		int w = ((int)((LONGLONG)nWidth * (p->m_nR - p->m_nL) / 10000)) & ~3;
+		int h = ((int)((LONGLONG)nHeight * (p->m_nB - p->m_nT) / 10000)) & ~3;
+		if (x + w > nWidth)
+			w = (nWidth - x) & ~3;
+		if (y + h > nHeight)
+			h = (nHeight - y) & ~3;
+		if (w >= 16 && h >= 16)
+		{
+			Buf.resize((size_t)w * h * 3 / 2);
+			BYTE* pDst = &Buf[0];
+			const BYTE* pSrcY = pI420;
+			const BYTE* pSrcU = pSrcY + (size_t)nWidth * nHeight;
+			const BYTE* pSrcV = pSrcU + (size_t)(nWidth / 2) * (nHeight / 2);
+			BYTE* pDstY = pDst;
+			BYTE* pDstU = pDstY + (size_t)w * h;
+			BYTE* pDstV = pDstU + (size_t)(w / 2) * (h / 2);
+			for (int r = 0 ; r < h ; r++)
+				memcpy(pDstY + (size_t)r * w, pSrcY + (size_t)(y + r) * nWidth + x, w);
+			for (int r = 0 ; r < h / 2 ; r++)
+			{
+				memcpy(pDstU + (size_t)r * (w / 2), pSrcU + (size_t)(y / 2 + r) * (nWidth / 2) + x / 2, w / 2);
+				memcpy(pDstV + (size_t)r * (w / 2), pSrcV + (size_t)(y / 2 + r) * (nWidth / 2) + x / 2, w / 2);
+			}
+			// Upscale with a smooth interpolation (instead of the blocky stretch done by the window)
+			// and sharpen, a small crop of a big picture looks much better this way
+			BYTE* pOut = pDst;
+			int ow = w;
+			int oh = h;
+			int nTargetW = p->m_pDst->m_nCropTargetWidth;
+			if (nTargetW > w && nTargetW <= 3840)
+			{
+				int nNewW = nTargetW & ~3;
+				int nNewH = ((int)((LONGLONG)h * nNewW / w)) & ~3;
+				if (nNewW >= 16 && nNewH >= 16)
+				{
+					p->m_pSws = sws_getCachedContextHelper(	p->m_pSws,
+															w, h, AV_PIX_FMT_YUV420P,
+															nNewW, nNewH, AV_PIX_FMT_YUV420P,
+															SWS_LANCZOS);
+					if (p->m_pSws)
+					{
+						Out.resize((size_t)nNewW * nNewH * 3 / 2);
+						const uint8_t* srcData[4] = {pDstY, pDstU, pDstV, NULL};
+						int srcStride[4] = {w, w / 2, w / 2, 0};
+						uint8_t* dstData[4] = {	&Out[0],
+												&Out[0] + (size_t)nNewW * nNewH,
+												&Out[0] + (size_t)nNewW * nNewH + (size_t)(nNewW / 2) * (nNewH / 2),
+												NULL};
+						int dstStride[4] = {nNewW, nNewW / 2, nNewW / 2, 0};
+						if (sws_scale(p->m_pSws, srcData, srcStride, 0, h, dstData, dstStride) > 0)
+						{
+							pOut = &Out[0];
+							ow = nNewW;
+							oh = nNewH;
+						}
+					}
+				}
+			}
+			if (pOut == pDst)
+			{
+				// Log (a few times) why the crop has not been enlarged
+				static LONG lCropLogCount = 0;
+				if (::InterlockedIncrement(&lCropLogCount) <= 5)
+					::LogLine(_T("crop %dx%d not enlarged: CropTargetWidth=%d, sws=%s"), w, h, nTargetW, p->m_pSws ? _T("ok") : _T("failed or not used"));
+			}
+			if (pOut != pDst)
+				CropSharpenLuma(pOut, ow, oh, p->m_pDst->m_nCropSharpen, Tmp);
+			p->m_pDst->ProcessCropFrame(pOut, ow, oh, llPtsMs);
+		}
+		::InterlockedDecrement(&p->m_nBusy);
+	}
+}
+
 int CVideoDeviceDoc::CWatchdogThread::Work()
 {
 	ASSERT(m_pDoc);
@@ -3227,6 +3528,8 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 	// Init vars
 	LONGLONG llLastHttpReconnectUpTime = -HTTP_CONNECTION_TIMEOUT_SEC * 1000; // set it so that the first reconnect is triggered without waiting
 	BOOL bDeviceAlert = FALSE;
+	LONGLONG llNotConnectedSince = 0;	// start of the time without connection of a network camera
+	BOOL bAutoFixTriggered = FALSE;
 
 	// Watch
 	for (;;)
@@ -3244,6 +3547,37 @@ int CVideoDeviceDoc::CWatchdogThread::Work()
 				// Current times
 				LONGLONG llCurrentUpTime = (LONGLONG)::GetTickCount64();
 				CTime CurrentTime = CTime::GetCurrentTime();
+
+				// A network camera (RTSP) that does not connect for 2 minutes: the Spy looks on the
+				// same address (local network only) for the right port and stream path
+				{
+					BOOL bNetCam = (!m_pDoc->m_pDxCapture													&&
+									!m_pDoc->m_sGetFrameVideoHost.IsEmpty()									&&
+									m_pDoc->m_nNetworkDeviceTypeMode >= CVideoDeviceDoc::URL_RTSP			&&
+									m_pDoc->m_nNetworkDeviceTypeMode != CVideoDeviceDoc::CROP_CAMERA		&&
+									!((CUImagerApp*)::AfxGetApp())->m_bServiceProcess);
+					BOOL bConnected = (m_pDoc->m_bCaptureStarted && !m_pDoc->m_bWatchDogVideoAlarm);
+					if (!bNetCam || bConnected)
+					{
+						llNotConnectedSince = 0;
+						bAutoFixTriggered = FALSE;
+					}
+					else if (llNotConnectedSince == 0)
+						llNotConnectedSince = llCurrentUpTime;
+					else if (!bAutoFixTriggered && (llCurrentUpTime - llNotConnectedSince) >= 120000)
+					{
+						bAutoFixTriggered = TRUE;
+						CAutoFixCtx* pAutoFixCtx = new CAutoFixCtx;
+						pAutoFixCtx->m_sDevicePathName = m_pDoc->GetDevicePathName();
+						pAutoFixCtx->m_sHost = m_pDoc->m_sGetFrameVideoHost;
+						pAutoFixCtx->m_nOldPort = (int)m_pDoc->m_nGetFrameVideoPort;
+						pAutoFixCtx->m_nOldMode = (int)m_pDoc->m_nNetworkDeviceTypeMode;
+						pAutoFixCtx->m_sUser = m_pDoc->m_sHttpGetFrameUsername;
+						pAutoFixCtx->m_sPass = m_pDoc->m_sHttpGetFramePassword;
+						if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 0, (LPARAM)pAutoFixCtx))
+							delete pAutoFixCtx;
+					}
+				}
 
 				// Video watchdog
 				LONGLONG llMsSinceLastProcessFrame = llCurrentUpTime - m_pDoc->m_llCurrentInitUpTime;
@@ -3598,6 +3932,9 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 	m_pProcessFrameExtraDib->SetShowMessageBoxOnError(FALSE);
 	m_pDrawDibRGB32 = new CDib;
 	m_pDrawDibRGB32->SetShowMessageBoxOnError(FALSE);
+	// Smooth the live view when it is enlarged (full screen): HALFTONE interpolates instead of
+	// repeating pixels (COLORONCOLOR), the image is less blocky
+	m_pDrawDibRGB32->SetStretchMode(HALFTONE);
 	m_pCamOffDib = new CDib;
 	m_pCamOffDib->SetShowMessageBoxOnError(FALSE);
 
@@ -3642,6 +3979,16 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 	m_llNextSnapshotUpTime = (LONGLONG)::GetTickCount64();
 	m_llCurrentInitUpTime = m_llNextSnapshotUpTime;
 	m_bWatchDogVideoAlarm = FALSE;
+
+	// Crop camera
+	m_sCropSource = _T("");
+	m_sCropName = _T("");
+	m_nCropL = 0;
+	m_nCropT = 0;
+	m_nCropR = 10000;
+	m_nCropB = 10000;
+	m_nCropTargetWidth = 960;
+	m_nCropSharpen = 80;
 
 	// Networking
 	m_pVideoNetCom = NULL;
@@ -3809,6 +4156,9 @@ CVideoDeviceDoc::CVideoDeviceDoc()
 
 CVideoDeviceDoc::~CVideoDeviceDoc()
 {
+	// Remove all the crop links (waits for the feeds in progress)
+	g_CropManager.Remove(this);
+
 	// Parsers always deleted after the related CNetCom objects!
 	if (m_pHttpVideoParseProcess)
 	{
@@ -4031,10 +4381,27 @@ CString CVideoDeviceDoc::GetDeviceName()
 
 	if (m_pDxCapture)
 		sDevice = m_pDxCapture->GetDeviceName();
+	else if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+	{
+		if (!m_sCropName.IsEmpty())
+			sDevice = m_sCropName;
+		else
+		{
+			sDevice = _T("crop") + (m_HttpGetFrameLocations.GetSize() > 0 ? m_HttpGetFrameLocations[0] : CString(_T("")));
+			sDevice.Replace(_T('/'), _T('_'));
+		}
+	}
 	else
 	{
 		sDevice.Format(_T("%s:%d"), m_sGetFrameVideoHost, m_nGetFrameVideoPort);
 		sDevice.Replace(_T("%"), _T(":interface")); // for IP6 link-local addresses
+
+		// Several cameras / DVR channels of the same IP:PORT opened with a full rtsp url are told
+		// apart by the stream path, otherwise they all get the same name and the same folder
+		if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP &&
+			m_HttpGetFrameLocations.GetSize() > 0 &&
+			m_HttpGetFrameLocations[0].GetLength() > 1)
+			sDevice += m_HttpGetFrameLocations[0];
 	}
 
 	// Registry key cannot begin with a backslash and should
@@ -4049,6 +4416,8 @@ CString CVideoDeviceDoc::GetDeviceFormat()
 	CString sFormat;
 	if (m_pDxCapture)
 		sFormat = CDib::GetCompressionName((LPBITMAPINFO)&m_CaptureBMI).MakeLower();
+	else if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+		sFormat = _T("crop");
 	else if (m_pVideoNetCom)
 	{
 		if (m_pHttpVideoParseProcess)
@@ -5005,6 +5374,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 		
 		m_HttpGetFrameLocations.Add(_T("/video/mjpg.cgi"));					// D-Link, Sparklan, TrendNet
 		
+		m_HttpGetFrameLocations.Add(_T("/stream"));							// ESP32-CAM (Espressif CameraWebServer, stream port 81)
+
 		m_HttpGetFrameLocations.Add(_T("/mjpegStreamer.cgi"));				// Compro, PROCCTV, Zyxel
 
 		m_HttpGetFrameLocations.Add(_T("/cgi-bin/video.cgi?msubmenu=mjpg"));// Samsung
@@ -5113,6 +5484,8 @@ void CVideoDeviceDoc::InitHttpGetFrameLocations()
 
 		m_HttpGetFrameLocations.Add(_T("/Streaming/channels/1/picture"));	// Hikvision, ABUS
 
+		m_HttpGetFrameLocations.Add(_T("/capture"));							// ESP32-CAM (esp32-cam-webserver, port 80)
+
 		m_HttpGetFrameLocations.Add(_T("/capture1.jpg"));					// Active WebCam Video Surveillance Software
 
 		m_HttpGetFrameLocations.Add(CString(_T("/cgi-bin/CGIProxy.fcgi?cmd=snapPicture2")) +
@@ -5185,6 +5558,10 @@ BOOL CVideoDeviceDoc::OpenNetVideoDevice(CString sAddress)
 									m_nNetworkDeviceTypeMode))
 		return FALSE;
 
+	// Crop camera: the frames come from another camera, nothing to connect
+	if (m_nNetworkDeviceTypeMode == CVideoDeviceDoc::CROP_CAMERA)
+		return OpenCropDevice();
+
 	// Init http
 	if (m_nNetworkDeviceTypeMode < CVideoDeviceDoc::URL_RTSP)
 	{
@@ -5227,6 +5604,102 @@ BOOL CVideoDeviceDoc::OpenNetVideoDevice(CString sAddress)
 		ConnectRtsp();
 
 	return TRUE;
+}
+
+BOOL CVideoDeviceDoc::OpenCropDevice()
+{
+	CWinApp* pApp = ::AfxGetApp();
+	CString sPath(GetDevicePathName());
+
+	// Load the crop settings (written by CMainFrame::CreateCropCamera())
+	m_sCropSource = pApp->GetProfileString(sPath, _T("CropSource"), _T(""));
+	m_sCropName = pApp->GetProfileString(sPath, _T("CropName"), _T(""));
+	m_nCropL = (int)pApp->GetProfileInt(sPath, _T("CropL"), 0);
+	m_nCropT = (int)pApp->GetProfileInt(sPath, _T("CropT"), 0);
+	m_nCropR = (int)pApp->GetProfileInt(sPath, _T("CropR"), 10000);
+	m_nCropB = (int)pApp->GetProfileInt(sPath, _T("CropB"), 10000);
+	m_nCropTargetWidth = (int)pApp->GetProfileInt(sPath, _T("CropTargetWidth"), 960);	// 0 = no upscale
+	m_nCropSharpen = (int)pApp->GetProfileInt(sPath, _T("CropSharpen"), 80);				// 0 = off
+	if (m_sCropSource.IsEmpty()		||
+		m_nCropL < 0				||
+		m_nCropT < 0				||
+		m_nCropR > 10000			||
+		m_nCropB > 10000			||
+		m_nCropR <= m_nCropL		||
+		m_nCropB <= m_nCropT)
+		return FALSE;
+
+	// Load Settings
+	LoadSettings(DEFAULT_FRAMERATE, FALSE, sPath, GetDeviceName());
+	::SetTimer(GetView()->GetSafeHwnd(), ID_TIMER_RELOAD, RELOAD_TIMER_MS, NULL);
+
+	// Start Threads
+	if (!m_SaveFrameListThread.IsAlive())
+		m_SaveFrameListThread.Start();
+	if (!m_WatchdogThread.IsAlive())
+		m_WatchdogThread.Start();
+	if (!m_DeleteThread.IsAlive())
+		m_DeleteThread.Start(THREAD_PRIORITY_LOWEST);
+
+	// Reset vars
+	m_dwFrameCountUp = 0U;
+	m_llNextSnapshotUpTime = (LONGLONG)::GetTickCount64();
+	m_llCurrentInitUpTime = m_llNextSnapshotUpTime;
+
+	// Set the title, the frames will arrive when CMainFrame links us to the source camera
+	SetDocumentTitle();
+
+	return TRUE;
+}
+
+// Called from the thread of the source camera
+void CVideoDeviceDoc::ProcessCropFrame(LPBYTE pData, int nWidth, int nHeight, LONGLONG llPtsMs)
+{
+	if (m_bClosing || !pData || nWidth <= 0 || nHeight <= 0 || !GetView())
+		return;
+
+	// Init doc vars?
+	if (m_DocRect.right != nWidth || m_DocRect.bottom != nHeight)
+	{
+		m_ProcessFrameBMI.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		m_ProcessFrameBMI.bmiHeader.biWidth = (LONG)nWidth;
+		m_ProcessFrameBMI.bmiHeader.biHeight = (LONG)nHeight;
+		m_ProcessFrameBMI.bmiHeader.biPlanes = 1; // must be 1
+		m_ProcessFrameBMI.bmiHeader.biBitCount = 12;
+		m_ProcessFrameBMI.bmiHeader.biCompression = FCC('I420');
+		m_ProcessFrameBMI.bmiHeader.biSizeImage = (DWORD)(nWidth * nHeight * 3 / 2);
+		m_DocRect.right = m_ProcessFrameBMI.bmiHeader.biWidth;
+		m_DocRect.bottom = m_ProcessFrameBMI.bmiHeader.biHeight;
+
+		// Free Movement Detector because we changed size and/or format!
+		FreeMovementDetector();
+
+		// Update
+		if (m_bSizeToDoc)
+		{
+			::PostMessage(	GetView()->GetSafeHwnd(),
+							WM_THREADSAFE_UPDATEWINDOWSIZES,
+							(WPARAM)UPDATEWINDOWSIZES_SIZETODOC,
+							(LPARAM)0);
+			m_bSizeToDoc = FALSE;
+		}
+		else
+		{
+			::PostMessage(	GetView()->GetSafeHwnd(),
+							WM_THREADSAFE_UPDATEWINDOWSIZES,
+							(WPARAM)0,
+							(LPARAM)0);
+		}
+		::PostMessage(	GetView()->GetSafeHwnd(),
+						WM_THREADSAFE_SETDOCUMENTTITLE,
+						0, 0);
+		::PostMessage(	GetView()->GetSafeHwnd(),
+						WM_THREADSAFE_UPDATE_PHPPARAMS,
+						0, 0);
+	}
+
+	// Process
+	ProcessI420Frame(pData, m_ProcessFrameBMI.bmiHeader.biSizeImage, llPtsMs);
 }
 
 void CVideoDeviceDoc::OpenNetVideoDevice(CHostPortDlg* pDlg)
@@ -5319,6 +5792,98 @@ void CVideoDeviceDoc::OnUpdateCaptureRecord(CCmdUI* pCmdUI)
 	//       CVideoDeviceChildFrame::OnToolbarDropDown() is responsible for the menu popup
 	pCmdUI->Enable();
 	pCmdUI->SetCheck(m_nDetectionLevel != 0 ? 1 : 0);
+}
+
+// Spy toolbar button: runs the Spy on this camera's address right away, and if it finds a working
+// configuration, applies it without asking (the 2-minutes automatic Spy still asks, this one does not
+// because the person clicked the button on purpose)
+void CVideoDeviceDoc::OnCaptureSpy()
+{
+	if (m_pDxCapture || m_sGetFrameVideoHost.IsEmpty())
+		return;
+	CAutoFixCtx* pCtx = new CAutoFixCtx;
+	pCtx->m_sDevicePathName = GetDevicePathName();
+	pCtx->m_sHost = m_sGetFrameVideoHost;
+	pCtx->m_nOldPort = (int)m_nGetFrameVideoPort;
+	pCtx->m_nOldMode = (int)m_nNetworkDeviceTypeMode;
+	pCtx->m_sUser = m_sHttpGetFrameUsername;
+	pCtx->m_sPass = m_sHttpGetFramePassword;
+	pCtx->m_bSilentApply = TRUE;
+	if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOFIX_START, 1, (LPARAM)pCtx))
+		delete pCtx;
+}
+
+void CVideoDeviceDoc::OnUpdateCaptureSpy(CCmdUI* pCmdUI)
+{
+	pCmdUI->Enable(!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty());
+}
+
+// "Network / IP Camera" of the camera settings button: the same dialog as the File menu one, but filled with the
+// configuration of this camera so that it can be checked and edited. When the address, port, camera maker or
+// stream path changes the camera is reopened with the new configuration and the old one is removed
+void CVideoDeviceDoc::OnCaptureNetworkEdit()
+{
+	if (m_pDxCapture || m_sGetFrameVideoHost.IsEmpty())
+		return;
+
+	CHostPortDlg dlg;
+	CString sUrlHost;
+	int nUrlPort = 0;
+	int nUrlMode = 0;
+	CHostPortDlg::MakeUrl(m_sGetFrameVideoHost, (int)m_nGetFrameVideoPort, m_HttpGetFrameLocations[0], (int)m_nNetworkDeviceTypeMode, sUrlHost, nUrlPort, nUrlMode);
+	dlg.m_sHost = sUrlHost;
+	dlg.m_nPort = nUrlPort;
+	dlg.m_nDeviceTypeMode = nUrlMode;
+	const CString sOldDevicePathName(GetDevicePathName());
+	CWnd* pOldFrame = GetFrame();
+	dlg.m_sEditDevicePathName = sOldDevicePathName;
+
+	GetView()->ForceCursor();
+	INT_PTR nRet = dlg.DoModal();
+	GetView()->ForceCursor(FALSE);
+	if (nRet != IDOK)
+		return;
+
+	// Did the camera change?
+	CString sNewHost;
+	int nNewPort = 0;
+	CString sNewLocation;
+	int nNewMode = 0;
+	CHostPortDlg::ParseUrl(dlg.m_sHost, dlg.m_nPort, dlg.m_nDeviceTypeMode, sNewHost, nNewPort, sNewLocation, nNewMode);
+	CString sNewDevicePathName(CVideoDeviceDoc::MakeNetworkDevicePathName(sNewHost, nNewPort, sNewLocation, (CVideoDeviceDoc::NetworkDeviceTypeMode)nNewMode));
+	if (sNewDevicePathName == sOldDevicePathName)
+	{
+		// Same camera: login and transport were saved, they are used the next time the camera is opened
+		::AfxMessageBox(_T("Configuração salva. Para aplicar usuário, senha e transporte feche e abra a câmera de novo."), MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+
+	// Another address / port / maker: open the new camera and remove this one
+	CVideoDeviceDoc* pNewDoc = (CVideoDeviceDoc*)((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate()->OpenDocumentFile(NULL);
+	if (pNewDoc)
+	{
+		pNewDoc->OpenNetVideoDevice(&dlg);
+		::AfxGetMainFrame()->RemoveCamera(sOldDevicePathName, pOldFrame);
+	}
+}
+
+void CVideoDeviceDoc::OnUpdateCaptureNetworkEdit(CCmdUI* pCmdUI)
+{
+	pCmdUI->Enable(!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && !m_bClosing);
+}
+
+// Trash toolbar button: same removal as the trash icon that used to float over the video
+void CVideoDeviceDoc::OnCaptureDeleteCamera()
+{
+	CString sMsg;
+	sMsg.Format(_T("Excluir a c\u00e2mera \"%s\"?\n\nA c\u00e2mera ser\u00e1 fechada e a configura\u00e7\u00e3o dela removida. As grava\u00e7\u00f5es n\u00e3o s\u00e3o apagadas."), GetAssignedDeviceName());
+	if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
+		::AfxGetMainFrame()->RemoveCamera(GetDevicePathName(), GetFrame());
+}
+
+void CVideoDeviceDoc::OnUpdateCaptureDeleteCamera(CCmdUI* pCmdUI)
+{
+	pCmdUI->Enable();
 }
 
 void CVideoDeviceDoc::OnMovDetSensitivity0()
@@ -6878,8 +7443,8 @@ void CVideoDeviceDoc::AddFrameCount(CDib* pDib, const CString& sCount, int nRefF
 
 void CVideoDeviceDoc::AddNoDonationTag(CDib* pDib, int nRefFontSize)
 {
-	// Check
-	if (!pDib)
+	// Check (always return: the yellow "NO DONATION" tag is disabled)
+	if (!pDib || true)
 		return;
 
 	// Calc. rectangle
@@ -7559,6 +8124,9 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 			}
 		}
 
+		// Feed the crop cameras linked to us (frame already flipped, obscured and privacy masked)
+		g_CropManager.Feed(this, pDib->GetBits(), (int)pDib->GetWidth(), (int)pDib->GetHeight(), llPtsMs);
+
 		// Set Pts, Time and UpTime to Dib
 		pDib->SetPts(llPtsMs);
 		pDib->SetTime(CurrentUtcFileTime);
@@ -7679,6 +8247,21 @@ void CVideoDeviceDoc::ProcessI420Frame(LPBYTE pData, DWORD dwSize, LONGLONG llPt
 				::PostMessage(	GetView()->GetSafeHwnd(),
 								WM_THREADSAFE_CAPTURECAMERABASICSETTINGS,
 								0, 0);
+
+				// First successful connection of a new network camera: search the network for other
+				// cameras and DVR channels (the main frame checks the user setting and starts the scan)
+				// (not for streams with a path: DVR channels opened together would each start a new scan)
+				if (!m_pDxCapture && !m_sGetFrameVideoHost.IsEmpty() && m_nNetworkDeviceTypeMode != CVideoDeviceDoc::CROP_CAMERA && !((CUImagerApp*)::AfxGetApp())->m_bServiceProcess &&
+					!(m_nNetworkDeviceTypeMode == CVideoDeviceDoc::URL_RTSP && m_HttpGetFrameLocations.GetSize() > 0 && m_HttpGetFrameLocations[0].GetLength() > 1))
+				{
+					CAutoScanCtx* pAutoScanCtx = new CAutoScanCtx;
+					pAutoScanCtx->m_sHost = m_sGetFrameVideoHost;
+					pAutoScanCtx->m_nPort = (m_nNetworkDeviceTypeMode >= CVideoDeviceDoc::URL_RTSP) ? (int)m_nGetFrameVideoPort : 0;
+					pAutoScanCtx->m_sUser = m_sHttpGetFrameUsername;
+					pAutoScanCtx->m_sPass = m_sHttpGetFramePassword;
+					if (!::PostMessage(::AfxGetMainFrame()->GetSafeHwnd(), WM_THREADSAFE_AUTOSCAN_START, 0, (LPARAM)pAutoScanCtx))
+						delete pAutoScanCtx;
+				}
 			}
 			::LogLine(_T("%s %s (%dx%d, %s)"), ML_STRING(1764, "Starting"), GetAssignedDeviceName(), m_DocRect.Width(), m_DocRect.Height(), GetDeviceFormat());
 		}
@@ -9123,15 +9706,22 @@ void CVideoDeviceDoc::ConnectHttp()
 	m_HttpThread.SetEventVideoConnect();
 }
 
-void CVideoDeviceDoc::ConnectRtsp()
+CString CVideoDeviceDoc::GetRtspPathAndQuery(	NetworkDeviceTypeMode nDeviceTypeMode,
+												BOOL bPreferTcpForRtsp,
+												const CString& sUsername,
+												const CString& sPassword,
+												BOOL& bCredentialAlreadyAdded)
 {
 	// Prepare path and optional query
 	CString sPathAndQuery;
-	BOOL bCredentialAlreadyAdded = FALSE;
-	switch (m_nNetworkDeviceTypeMode)
+	bCredentialAlreadyAdded = FALSE;
+	switch (nDeviceTypeMode)
 	{
-		case URL_RTSP:				
-			sPathAndQuery = m_HttpGetFrameLocations[0];
+		case URL_RTSP:
+		case GENERIC_SP:
+		case GENERIC_CP:
+			// No fixed per-maker path: URL_RTSP uses the user supplied location,
+			// GENERIC_SP/CP are not RTSP modes at all. Caller handles these.
 			break;
 
 		case GENERIC_1_RTSP:		// Ctronics, Escam, FDT, HooToo, IdeaNext, INSTAR, KKmoon, Microseven, SV3C, Wansview, WBox
@@ -9156,21 +9746,29 @@ void CVideoDeviceDoc::ConnectRtsp()
 			sPathAndQuery = _T("/live/ch0");
 			break;
 
+		case GENERIC_7_RTSP:		// Yoosee/Gwell GWIPC main stream
+			sPathAndQuery = _T("/1");
+			break;
+
+		case GENERIC_8_RTSP:		// Yoosee/Gwell sub stream
+			sPathAndQuery = _T("/onvif2");
+			break;
+
 		case GENERIC_4_RTSP:		// Chinavasion, Cotier, Ctronics, Escam, Xvision
 		case FALCONEYE_RTSP:		
-			sPathAndQuery = m_bPreferTcpforRtsp ? _T("/ch01.264?ptype=tcp") : _T("/ch01.264?ptype=udp");
+			sPathAndQuery = bPreferTcpForRtsp ? _T("/ch01.264?ptype=tcp") : _T("/ch01.264?ptype=udp");
 			break;
 
 		case GENERIC_5_RTSP:		// Note: it is legal to have ampersands and equal signs in the path part of an url
-			sPathAndQuery = CString(_T("/user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("&password=") + ::UrlEncode(m_sHttpGetFramePassword, TRUE) + 
+			sPathAndQuery = CString(_T("/user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("&password=") + ::UrlEncode(sPassword, TRUE) + 
 							_T("&channel=1&stream=0.sdp");
 			bCredentialAlreadyAdded = TRUE;
 			break;
 
 		case GENERIC_6_RTSP:		// Note: it is legal to have equal signs in the path part of an url
-			sPathAndQuery = CString(_T("/user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("_password=") + ::UrlEncode(m_sHttpGetFramePassword, TRUE) +
+			sPathAndQuery = CString(_T("/user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("_password=") + ::UrlEncode(sPassword, TRUE) +
 							_T("_channel=1_stream=0.sdp");
 			bCredentialAlreadyAdded = TRUE;
 			break;
@@ -9350,8 +9948,8 @@ void CVideoDeviceDoc::ConnectRtsp()
 			break;
 
 		case SUMPPLE_RTSP:
-			sPathAndQuery = CString(_T("/live/av0?user=")) + (m_sHttpGetFrameUsername.IsEmpty() ? _T("admin") : ::UrlEncode(m_sHttpGetFrameUsername, TRUE)) +
-							_T("&passwd=") + (m_sHttpGetFramePassword.IsEmpty() ? _T("sumpple") : ::UrlEncode(m_sHttpGetFramePassword, TRUE));
+			sPathAndQuery = CString(_T("/live/av0?user=")) + (sUsername.IsEmpty() ? _T("admin") : ::UrlEncode(sUsername, TRUE)) +
+							_T("&passwd=") + (sPassword.IsEmpty() ? _T("sumpple") : ::UrlEncode(sPassword, TRUE));
 			bCredentialAlreadyAdded = TRUE;
 			break;
 
@@ -9370,7 +9968,7 @@ void CVideoDeviceDoc::ConnectRtsp()
 		
 		case VSTARCAM_RTSP:
 		case ZMODO_RTSP:			
-			sPathAndQuery = m_bPreferTcpforRtsp ? _T("/tcp/av0_0") : _T("/udp/av0_0");
+			sPathAndQuery = bPreferTcpForRtsp ? _T("/tcp/av0_0") : _T("/udp/av0_0");
 			break;
 
 		case XIAOMI_RTSP:			
@@ -9397,6 +9995,22 @@ void CVideoDeviceDoc::ConnectRtsp()
 			ASSERT(FALSE);
 			break;
 	}
+	return sPathAndQuery;
+}
+
+void CVideoDeviceDoc::ConnectRtsp()
+{
+	// Prepare path and optional query
+	CString sPathAndQuery;
+	BOOL bCredentialAlreadyAdded = FALSE;
+	if (m_nNetworkDeviceTypeMode == URL_RTSP)
+		sPathAndQuery = m_HttpGetFrameLocations[0];
+	else
+		sPathAndQuery = GetRtspPathAndQuery(	m_nNetworkDeviceTypeMode,
+												m_bPreferTcpforRtsp,
+												m_sHttpGetFrameUsername,
+												m_sHttpGetFramePassword,
+												bCredentialAlreadyAdded);
 
 	// Start thread with given url
 	CString sHost(m_sGetFrameVideoHost);

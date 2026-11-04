@@ -10,6 +10,11 @@
 
 #include "HostComboBox.h"
 
+// Shared with CameraScanDlg.cpp
+void SetSockAddrPort(SOCKADDR_STORAGE& addr, int nPort);
+// Returns 1 for RTSP, 2 for HTTP and 0 if the protocol is not recognized
+int ProbeTcpPort(const SOCKADDR_STORAGE& addr, int nAddrLen, int nPort, const CStringA& sHostForUrl);
+
 class CDeviceTypeModePair
 {
 	public:
@@ -37,6 +42,19 @@ public:
 						int& nOutGetFrameVideoPort,
 						CString& sOutHttpGetFrameLocation,
 						int& nOutDeviceTypeMode);
+	// Quiet check whether a device with the given host, port and type is already running
+	static BOOL IsRunningQuiet(const CString& sHost, int nPort, int nDeviceTypeMode);
+	// Opens a RTSP camera, sUrl is the full rtsp:// url when the stream path is known.
+	// The login is saved for the camera. Returns FALSE if already running or on error
+	// nForceMode: camera maker list entry to use (-1 = from the url), nTransport: -1 keep, 0 UDP, 1 TCP (UDP retry)
+	static BOOL OpenNetworkCamera(const CString& sHost, int nPort, const CString& sUrl, const CString& sUser, const CString& sPass, int nForceMode = -1, int nTransport = -1);
+	static BOOL SplitStreamUrl(const CString& sInUrl,
+							BOOL& bOutRtsp,
+							CString& sOutUser,
+							CString& sOutPass,
+							CString& sOutHost,
+							int& nOutPort,
+							CString& sOutLocation);
 	static void MakeUrl(const CString& sInGetFrameVideoHost,
 						int nInGetFrameVideoPort,
 						const CString& sInGetFrameLocation,
@@ -50,6 +68,7 @@ public:
 	CString m_sHost;
 	int m_nPort;
 	int	m_nDeviceTypeMode;
+	CString m_sEditDevicePathName;	// set to edit the configuration of a running camera: that camera is not 'already running'
 	enum { IDD = IDD_HOSTPORT };
 
 // Implementation
@@ -82,6 +101,10 @@ protected:
 	afx_msg void OnCheckPreferTcpforRtsp();
 	afx_msg void OnCheckUdpMulticastforRtsp();
 	afx_msg void OnButtonHelp();
+	afx_msg void OnButtonFillFromUrl();
+	afx_msg void OnButtonScanPorts();
+	afx_msg void OnButtonOpenScanLan();
+	afx_msg void OnButtonOpenScanDvr();
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 };

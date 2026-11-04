@@ -17,6 +17,8 @@
 #include "SortableFileFind.h"
 #include "HostPortDlg.h"
 #include "SendMailConfigurationDlg.h"
+#include <vector>
+#include <atomic>
 extern "C"
 {
 #include "libavutil/opt.h"
@@ -26,6 +28,9 @@ extern "C"
 #include "libswscale/swscale.h"
 #include "libswresample/swresample.h"
 }
+
+// Command ID of the "Create crop camera" context menu entry
+#define ID_CROP_CAMERA							0xDE01
 
 // Forward Declarations
 class CVideoDeviceView;
@@ -563,6 +568,8 @@ public:
 		GENERIC_5_RTSP = 1014,			// Generic 5 RTSP device
 		SEVENLINKS_RTSP = 1015,			// 7Links RTSP
 		GENERIC_6_RTSP = 1016,			// Generic 6 RTSP device
+		GENERIC_7_RTSP = 1017,			// Generic 7 RTSP device (/1)
+		GENERIC_8_RTSP = 1018,			// Generic 8 RTSP device (/onvif2)
 		ABUS_RTSP = 1020,				// Abus RTSP
 		ACTI_RTSP = 1030,				// ACTi RTSP
 		AMCREST_RTSP = 1035,			// Amcrest RTSP
@@ -637,6 +644,7 @@ public:
 		WYZE_RTSP = 1270,				// Wyze RTSP
 		EZVIZ_H264_RTSP = 1280,			// Ezviz H.264 RTSP
 		EZVIZ_H264STREAM_RTSP = 1281,	// Ezviz h264_stream RTSP
+		CROP_CAMERA = 1500,				// Virtual camera: crop of another camera (no network connection)
 		LAST_DEVICE						// Placeholder for range check
 	} NetworkDeviceTypeMode;
 
@@ -656,6 +664,10 @@ public:
 	CString GetAssignedDeviceName();											// Get User Assigned Device Name
 	CString GetDeviceName();													// Friendly Device Name
 	CString GetDeviceFormat();													// Friendly Device Format
+
+	// Crop camera (virtual camera fed with a region of another camera)
+	BOOL OpenCropDevice();													// Called by OpenNetVideoDevice() for the CROP_CAMERA mode
+	void ProcessCropFrame(LPBYTE pData, int nWidth, int nHeight, LONGLONG llPtsMs);		// Called from the source camera thread
 	void SetDocumentTitle();
 	CVideoDeviceView* GetView() const {return m_pView;};
 	void SetView(CVideoDeviceView* pView) {m_pView = pView;};
@@ -673,6 +685,17 @@ public:
 	// Connect to the chosen Networking Type and Mode
 	void ConnectHttp();
 	void ConnectRtsp();
+
+	// Returns the per-maker RTSP path and query (e.g. "/Streaming/Channels/101" for Hikvision) for
+	// a given NetworkDeviceTypeMode. Used both by ConnectRtsp() to build the real streaming URL and
+	// by CameraScanDlg.cpp (GetRtspMakers()) to alternate through each maker/protocol combination
+	// when scanning a host. Returns an empty string for modes without a fixed per-maker path
+	// (URL_RTSP, GENERIC_SP, GENERIC_CP).
+	static CString GetRtspPathAndQuery(	NetworkDeviceTypeMode nDeviceTypeMode,
+											BOOL bPreferTcpForRtsp,
+											const CString& sUsername,
+											const CString& sPassword,
+											BOOL& bCredentialAlreadyAdded);
 
 	// Dialogs
 	void CaptureCameraBasicSettings();
@@ -927,6 +950,16 @@ public:
 	volatile int m_nMovDetSavesCountYear;				// the saves counter is valid for this year
 	CRITICAL_SECTION m_csMovDetSavesCount;				// Critical section for the saves counter variables
 
+	// Crop camera
+	CString m_sCropSource;								// Device path name of the source camera
+	CString m_sCropName;								// Friendly name of the crop camera
+	int m_nCropL;										// Crop rectangle in 1/10000 of the source frame
+	int m_nCropT;
+	int m_nCropR;
+	int m_nCropB;
+	int m_nCropTargetWidth;								// Upscale the crop to this width (0 = no upscale)
+	int m_nCropSharpen;									// Sharpen amount in percent after the upscale (0 = off)
+
 	// Networking
 	CNetCom* volatile m_pVideoNetCom;					// HTTP Video Instance
 	volatile NetworkDeviceTypeMode m_nNetworkDeviceTypeMode;// Video Network Device Type and Mode
@@ -1049,6 +1082,12 @@ protected:
 	afx_msg void OnUpdateCaptureCameraSettings(CCmdUI* pCmdUI);
 	afx_msg void OnUpdateEditFrameStamp(CCmdUI* pCmdUI);
 	afx_msg void OnUpdateCaptureRecord(CCmdUI* pCmdUI);
+	afx_msg void OnCaptureSpy();			// Spy toolbar button: runs now, applies what it finds without asking
+	afx_msg void OnUpdateCaptureSpy(CCmdUI* pCmdUI);
+	afx_msg void OnCaptureNetworkEdit();		// Network / IP cam toolbar button: shows the configuration of this camera
+	afx_msg void OnUpdateCaptureNetworkEdit(CCmdUI* pCmdUI);
+	afx_msg void OnCaptureDeleteCamera();	// trash toolbar button: same as the Spy window's Remove Camera
+	afx_msg void OnUpdateCaptureDeleteCamera(CCmdUI* pCmdUI);
 	afx_msg void OnMovDetSensitivity0();
 	afx_msg void OnUpdateMovDetSensitivity0(CCmdUI* pCmdUI);
 	afx_msg void OnMovDetSensitivity5();
@@ -1126,6 +1165,37 @@ protected:
 	//}}AFX_MSG
 	DECLARE_MESSAGE_MAP()
 };
+
+// Links between a source camera and its crop cameras.
+// The source camera thread calls Feed() for every frame, Feed() copies the
+// requested region and hands it over to the crop camera.
+class CCropManager
+{
+public:
+	CCropManager();
+	~CCropManager();
+	BOOL Link(CVideoDeviceDoc* pSrc, CVideoDeviceDoc* pDst, int nL, int nT, int nR, int nB);	// UI thread
+	BOOL IsLinked(CVideoDeviceDoc* pDst);														// UI thread
+	void Remove(CVideoDeviceDoc* pDoc);															// UI thread, removes all the links of pDoc (source or crop)
+	void Feed(CVideoDeviceDoc* pSrc, const BYTE* pI420, int nWidth, int nHeight, LONGLONG llPtsMs);	// camera thread
+
+protected:
+	struct CEntry
+	{
+		CVideoDeviceDoc* m_pSrc;
+		CVideoDeviceDoc* m_pDst;
+		int m_nL, m_nT, m_nR, m_nB;		// 1/10000 of the source frame
+		volatile LONG m_nBusy;			// number of Feed() calls using this entry
+		struct SwsContext* m_pSws;		// upscale context (used only by the Feed() calls)
+		ULONGLONG m_ullLastFeed;		// tick of the last processed frame (the crop is limited in frame rate)
+		CEntry() : m_pSrc(NULL), m_pDst(NULL), m_nL(0), m_nT(0), m_nR(0), m_nB(0), m_nBusy(0), m_pSws(NULL), m_ullLastFeed(0) {}
+		~CEntry() {if (m_pSws) {sws_freeContext(m_pSws); m_pSws = NULL;}}
+	};
+	CRITICAL_SECTION m_cs;
+	std::vector<CEntry*> m_List;
+	std::atomic<int> m_nCount;
+};
+extern CCropManager g_CropManager;
 
 #endif
 

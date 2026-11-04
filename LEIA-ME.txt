@@ -1,0 +1,5 @@
+Reconstrucao APENAS ADITIVA para os erros de CameraScanDlg.cpp.
+Nenhum arquivo seu e sobrescrito: copie/cole cada trecho no seu arquivo local (1..4).
+Ordem: 1_resource.h  2_uImager.rc  3_HostPortDlg.h  4_HostPortDlg.cpp.
+NAO use o HostPortDlg_corrigido.zip anterior por cima dos seus arquivos.
+Nao testado (nao tenho o VS/Windows aqui). Os dialogos do .rc sao um layout basico; ajuste no editor de recursos.

@@ -8,6 +8,12 @@
 #include "DxCapture.h"
 #include "MyMemDC.h"
 
+// Defined in uImager.cpp
+SwsContext *sws_getCachedContextHelper(	struct SwsContext *context,
+										int srcW, int srcH, enum AVPixelFormat srcFormat,
+										int dstW, int dstH, enum AVPixelFormat dstFormat,
+										int flags);
+
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #undef THIS_FILE
@@ -24,6 +30,7 @@ BEGIN_MESSAGE_MAP(CVideoDeviceView, CUImagerView)
 	ON_WM_ERASEBKGND()
 	ON_WM_RBUTTONDOWN()
 	ON_WM_LBUTTONDOWN()
+	ON_WM_LBUTTONUP()
 	ON_WM_LBUTTONDBLCLK()
 	ON_WM_MBUTTONDOWN()
 	ON_WM_TIMER()
@@ -73,11 +80,73 @@ CVideoDeviceView::CVideoDeviceView()
 	m_MovDetSingleZoneSensitivity = 1;
 	m_bMovDetUnsupportedVideoSize = FALSE;
 	m_bMovDetUnsupportedZonesSize = FALSE;
+	m_bCropSelect = FALSE;
+	m_bCropDragging = FALSE;
+	m_ptCropStart = CPoint(0, 0);
+	m_ptCropEnd = CPoint(0, 0);
+	m_pSmoothSws = NULL;
 }
 
 CVideoDeviceView::~CVideoDeviceView()
 {
-	
+	if (m_pSmoothSws)
+	{
+		sws_freeContext(m_pSmoothSws);
+		m_pSmoothSws = NULL;
+	}
+}
+
+BOOL CVideoDeviceView::DrawSmoothScaled(HDC hDC, const CRect& rcClient, CDib* pDib)
+{
+	if (!pDib)
+		return FALSE;
+	const int nSrcW = (int)pDib->GetWidth();
+	const int nSrcH = (int)pDib->GetHeight();
+	const int nDstW = rcClient.Width();
+	const int nDstH = rcClient.Height();
+	LPBYTE pBits = pDib->GetBits();
+	if (!pBits || nSrcW < 2 || nSrcH < 2 || pDib->GetBitCount() != 32)
+		return FALSE;
+
+	// Only when the window is clearly bigger than the video (full screen)
+	if (nDstW * 10 < nSrcW * 13 && nDstH * 10 < nSrcH * 13)
+		return FALSE;
+	if (nDstW < 16 || nDstH < 16 || nDstW > 4096 || nDstH > 2304)
+		return FALSE;
+
+	m_pSmoothSws = sws_getCachedContextHelper(	m_pSmoothSws,
+												nSrcW, nSrcH, AV_PIX_FMT_BGRA,
+												nDstW, nDstH, AV_PIX_FMT_BGRA,
+												SWS_BICUBIC);
+	if (!m_pSmoothSws)
+		return FALSE;
+	size_t nSize = (size_t)nDstW * nDstH * 4;
+	if (m_SmoothBuf.size() != nSize)
+		m_SmoothBuf.resize(nSize);
+
+	// The DIB is bottom-up: read it from the last row with a negative stride
+	const uint8_t* srcData[4] = {pBits + (size_t)(nSrcH - 1) * nSrcW * 4, NULL, NULL, NULL};
+	int srcStride[4] = {-nSrcW * 4, 0, 0, 0};
+	uint8_t* dstData[4] = {&m_SmoothBuf[0], NULL, NULL, NULL};
+	int dstStride[4] = {nDstW * 4, 0, 0, 0};
+	if (sws_scale(m_pSmoothSws, srcData, srcStride, 0, nSrcH, dstData, dstStride) <= 0)
+		return FALSE;
+
+	BITMAPINFO Bmi;
+	memset(&Bmi, 0, sizeof(Bmi));
+	Bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+	Bmi.bmiHeader.biWidth = nDstW;
+	Bmi.bmiHeader.biHeight = -nDstH; // top-down
+	Bmi.bmiHeader.biPlanes = 1;
+	Bmi.bmiHeader.biBitCount = 32;
+	Bmi.bmiHeader.biCompression = BI_RGB;
+	int nOldMode = ::SetStretchBltMode(hDC, COLORONCOLOR);
+	int nLines = ::StretchDIBits(hDC,
+								rcClient.left, rcClient.top, nDstW, nDstH,
+								0, 0, nDstW, nDstH,
+								&m_SmoothBuf[0], &Bmi, DIB_RGB_COLORS, SRCCOPY);
+	::SetStretchBltMode(hDC, nOldMode);
+	return (nLines > 0 && nLines != GDI_ERROR);
 }
 
 #ifdef _DEBUG
@@ -569,6 +638,93 @@ void CVideoDeviceView::DrawSaveProgress(HDC hDC, const CRect& rcClient, BOOL bRe
 	::DeleteObject(hBrushBar);
 }
 
+void CVideoDeviceView::DrawCropSelection(HDC hDC)
+{
+	CRect rc(m_ptCropStart, m_ptCropEnd);
+	rc.NormalizeRect();
+	HGDIOBJ hOldBrush = ::SelectObject(hDC, ::GetStockObject(NULL_BRUSH));
+	HPEN hPenBlack = ::CreatePen(PS_SOLID, 3, RGB(0, 0, 0));
+	HGDIOBJ hOldPen = ::SelectObject(hDC, hPenBlack);
+	::Rectangle(hDC, rc.left, rc.top, rc.right, rc.bottom);
+	HPEN hPenWhite = ::CreatePen(PS_SOLID, 1, RGB(0xFF, 0xFF, 0xFF));
+	::SelectObject(hDC, hPenWhite);
+	::Rectangle(hDC, rc.left, rc.top, rc.right, rc.bottom);
+	::SelectObject(hDC, hOldPen);
+	::SelectObject(hDC, hOldBrush);
+	::DeleteObject(hPenBlack);
+	::DeleteObject(hPenWhite);
+}
+
+void CVideoDeviceView::CropSelectToggle()
+{
+	CVideoDeviceDoc* pDoc = GetDocument();
+	ASSERT_VALID(pDoc);
+	if (m_bCropSelect)
+		CropSelectEnd();
+	else if (!pDoc->m_nShowEditDetectionZones && pDoc->m_bCaptureStarted)
+	{
+		m_bCropSelect = TRUE;
+		m_bCropDragging = FALSE;
+		SetFocus();
+		EnableCursor();
+		::AfxGetMainFrame()->StatusText(_T("CROP: drag a rectangle on the image to create a crop camera, Esc to exit"));
+		Invalidate(FALSE);
+	}
+}
+
+void CVideoDeviceView::CropSelectEnd()
+{
+	if (m_bCropDragging)
+		::ReleaseCapture();
+	m_bCropSelect = FALSE;
+	m_bCropDragging = FALSE;
+	::AfxGetMainFrame()->StatusText();
+	Invalidate(FALSE);
+}
+
+void CVideoDeviceView::OnLButtonUp(UINT nFlags, CPoint point)
+{
+	if (m_bCropSelect)
+	{
+		if (m_bCropDragging)
+		{
+			::ReleaseCapture();
+			m_bCropDragging = FALSE;
+
+			// Selected rectangle in client coordinates
+			CRect rcClient;
+			GetClientRect(&rcClient);
+			CRect rcSel(m_ptCropStart, m_ptCropEnd);
+			rcSel.NormalizeRect();
+			rcSel.IntersectRect(rcSel, rcClient);
+
+			// Create the crop camera (ignore tiny selections)
+			if (rcClient.Width() > 0 && rcClient.Height() > 0 && rcSel.Width() >= 24 && rcSel.Height() >= 24)
+			{
+				int nL = (int)((LONGLONG)rcSel.left * 10000 / rcClient.Width());
+				int nT = (int)((LONGLONG)rcSel.top * 10000 / rcClient.Height());
+				int nR = (int)((LONGLONG)rcSel.right * 10000 / rcClient.Width());
+				int nB = (int)((LONGLONG)rcSel.bottom * 10000 / rcClient.Height());
+				if (::AfxGetMainFrame()->CreateCropCamera(GetDocument(), nL, nT, nR, nB))
+				{
+					// The new camera window gets the focus: give it back to us, so that
+					// more crops can be drawn, Esc exits the crop selection
+					CMDIChildWnd* pFrame = (CMDIChildWnd*)GetParentFrame();
+					if (pFrame)
+						pFrame->MDIActivate();
+					SetFocus();
+					::AfxGetMainFrame()->StatusText(_T("CROP: camera created, draw another rectangle or press Esc to exit"));
+				}
+			}
+			Invalidate(FALSE);
+		}
+		return;
+	}
+
+	CUImagerView::OnLButtonUp(nFlags, point);
+}
+
+
 void CVideoDeviceView::OnDraw(CDC* pDC)
 {
 	CVideoDeviceDoc* pDoc = GetDocument();
@@ -586,10 +742,13 @@ void CVideoDeviceView::OnDraw(CDC* pDC)
 		::EnterCriticalSection(&pDoc->m_csDib);
 
 		// Draw Frame
-		pDoc->m_pDrawDibRGB32->Paint(	MemDC.GetSafeHdc(),
-										&rcClient,
-										CRect(0, 0, pDoc->m_pDrawDibRGB32->GetWidth(), pDoc->m_pDrawDibRGB32->GetHeight()),
-										FALSE);
+		if (!DrawSmoothScaled(MemDC.GetSafeHdc(), rcClient, pDoc->m_pDrawDibRGB32))
+		{
+			pDoc->m_pDrawDibRGB32->Paint(	MemDC.GetSafeHdc(),
+											&rcClient,
+											CRect(0, 0, pDoc->m_pDrawDibRGB32->GetWidth(), pDoc->m_pDrawDibRGB32->GetHeight()),
+											FALSE);
+		}
 
 		// Leave CS
 		::LeaveCriticalSection(&pDoc->m_csDib);
@@ -597,6 +756,10 @@ void CVideoDeviceView::OnDraw(CDC* pDC)
 		// Draw Zones
 		if (pDoc->m_nShowEditDetectionZones)
 			DrawZones(MemDC.GetSafeHdc(), rcClient);
+
+		// Draw the crop selection rectangle
+		if (m_bCropSelect && m_bCropDragging)
+			DrawCropSelection(MemDC.GetSafeHdc());
 
 		// Draw REC Dot Symbol
 		BOOL bDetectingMinLengthMovement = pDoc->m_bDetectingMinLengthMovement;
@@ -701,6 +864,8 @@ void CVideoDeviceView::OnRButtonDown(UINT nFlags, CPoint point)
 		VERIFY(menu.LoadMenu(IDR_CONTEXT_VIDEO_DEVICE));
 		CMenu* pPopup = menu.GetSubMenu(0);
 		ASSERT(pPopup != NULL);
+		pPopup->AppendMenu(MF_SEPARATOR);
+		pPopup->AppendMenu(MF_STRING, ID_CROP_CAMERA, _T("Create crop camera... (Ctrl+Shift+C)"));
 		SetForegroundWindow();
 		ClientToScreen(&point);
 		pPopup->TrackPopupMenu(TPM_LEFTBUTTON|TPM_RIGHTBUTTON, point.x, point.y, ::AfxGetMainFrame());
@@ -741,6 +906,15 @@ void CVideoDeviceView::OnLButtonDown(UINT nFlags, CPoint point)
 	ASSERT_VALID(pDoc);
 
 	EnableCursor();
+
+	// Crop selection: start dragging the rectangle
+	if (m_bCropSelect)
+	{
+		SetCapture();
+		m_bCropDragging = TRUE;
+		m_ptCropStart = m_ptCropEnd = point;
+		return;
+	}
 
 	CUImagerView::OnLButtonDown(nFlags, point);
 
@@ -871,7 +1045,9 @@ void CVideoDeviceView::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
 			break;
 
 		case VK_ESCAPE :
-			if (pDoc->m_pCameraAdvancedSettingsDlg && pDoc->m_pCameraAdvancedSettingsDlg->IsWindowVisible())
+			if (m_bCropSelect)
+				CropSelectEnd();
+			else if (pDoc->m_pCameraAdvancedSettingsDlg && pDoc->m_pCameraAdvancedSettingsDlg->IsWindowVisible())
 				pDoc->m_pCameraAdvancedSettingsDlg->Hide();
 			else if (m_bFullScreenMode)
 				::AfxGetMainFrame()->EnterExitFullscreen();	// Exit Full-Screen Mode
@@ -902,6 +1078,8 @@ void CVideoDeviceView::OnKeyDown(UINT nChar, UINT nRepCnt, UINT nFlags)
 				VERIFY(menu.LoadMenu(IDR_CONTEXT_VIDEO_DEVICE));
 				pPopup = menu.GetSubMenu(0);
 				ASSERT(pPopup != NULL);
+				pPopup->AppendMenu(MF_SEPARATOR);
+				pPopup->AppendMenu(MF_STRING, ID_CROP_CAMERA, _T("Create crop camera... (Ctrl+Shift+C)"));
 				SetForegroundWindow();
 				ClientToScreen(&Point);
 				pPopup->TrackPopupMenu(TPM_LEFTBUTTON|TPM_RIGHTBUTTON, Point.x, Point.y, ::AfxGetMainFrame());
@@ -926,6 +1104,11 @@ BOOL CVideoDeviceView::OnSetCursor(CWnd* pWnd, UINT nHitTest, UINT message)
 	if (((CUImagerApp*)::AfxGetApp())->IsWaitCursor())
 	{
 		RestoreWaitCursor();
+		return TRUE;
+	}
+	else if (m_bCropSelect)
+	{
+		::SetCursor(::LoadCursor(NULL, IDC_CROSS));
 		return TRUE;
 	}
 	else if (pDoc->m_nShowEditDetectionZones == 1)
@@ -1038,6 +1221,20 @@ void CVideoDeviceView::OnMouseMove(UINT nFlags, CPoint point)
 {
 	CVideoDeviceDoc* pDoc = GetDocument();
 	ASSERT_VALID(pDoc);
+
+	// Crop selection: update the rectangle
+	if (m_bCropSelect)
+	{
+		if (m_bCropDragging)
+		{
+			CRect rcClient;
+			GetClientRect(&rcClient);
+			m_ptCropEnd.x = MAX(rcClient.left, MIN(point.x, rcClient.right - 1));
+			m_ptCropEnd.y = MAX(rcClient.top, MIN(point.y, rcClient.bottom - 1));
+			Invalidate(FALSE);
+		}
+		return;
+	}
 
 	if (pDoc->m_nShowEditDetectionZones)
 		::AfxGetMainFrame()->StatusText(ML_STRING(1483, "*** Red=100% Orange=50% Yellow=25% Green=10% Blue=5% ***"));

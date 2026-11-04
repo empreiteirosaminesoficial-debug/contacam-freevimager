@@ -27,6 +27,7 @@ extern "C"
 #define WM_SCANANDEMAIL								WM_USER + 102
 #define WM_TRAY_NOTIFICATION						WM_USER + 103
 #ifdef VIDEODEVICEDOC
+#define WM_REMOVE_CAMERA_CONFIG						(WM_USER + 790)
 #define WM_AUTORUN_VIDEODEVICES						WM_USER + 104
 #endif
 														
@@ -64,6 +65,9 @@ extern "C"
 class CUImagerDoc;
 class CBatchProcDlg;
 class CDib;
+#ifdef VIDEODEVICEDOC
+class CVideoDeviceDoc;
+#endif
 
 class CMainFrame : public CMDIFrameWnd, public CTwain
 {
@@ -148,6 +152,21 @@ public:
 	// Log system usage
 	void LogSysUsage();
 
+#ifdef VIDEODEVICEDOC
+	// DVR mode: one big central camera + the other cameras small on the right
+	// (toggle with Ctrl+Shift+D, the choice is remembered)
+	void DvrToggle();
+	void DvrLayout();
+
+	// Crop cameras (virtual cameras fed with a region of another camera)
+	BOOL CreateCropCamera(CVideoDeviceDoc* pSrc, int nL, int nT, int nR, int nB);	// nL..nB: 1/10000 of the source frame
+
+	// Closes a camera and, when it is closed, removes its configuration and autorun entry
+	// (the recordings are not deleted)
+	void RemoveCamera(const CString& sDevicePathName, CWnd* pFrame);
+	void CropResolveLinks();														// links the crop cameras to their source camera
+#endif
+
 // Overrides
 	// ClassWizard generated virtual function overrides
 	//{{AFX_VIRTUAL(CMainFrame)
@@ -208,6 +227,21 @@ protected:
 	CString m_sStatusBarString;
 	BOOL m_bLastNotificationWndDone;
 	CNotificationWnd* m_pNotificationWnd;
+#ifdef VIDEODEVICEDOC
+	BOOL m_bDvrMode;
+	int m_nDvrStyle;		// 0 = big camera + column on the right, 1 = "L": big camera + small squares at the right and bottom, 2 = equal grid (all cameras the same size, like Intelbras/NVR viewers)
+	void DvrSetStyle(int nStyle);	// from the Window menu: turns DVR mode on with this style, or off if it is already on with it
+	afx_msg void OnDvrOff();
+	afx_msg void OnDvrColumn();
+	afx_msg void OnDvrL();
+	afx_msg void OnDvrGrid();
+	afx_msg void OnUpdateDvrOff(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrColumn(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrL(CCmdUI* pCmdUI);
+	afx_msg void OnUpdateDvrGrid(CCmdUI* pCmdUI);
+	HWND m_hDvrMain;
+	ULONGLONG m_ullDvrLastRotate;
+#endif
 
 	// Scan Vars
 	BOOL m_bScanAndEmail;
@@ -272,7 +306,14 @@ protected:
 #ifdef VIDEODEVICEDOC
 	afx_msg void OnInitMenuPopup(CMenu* pPopupMenu, UINT nIndex, BOOL bSysMenu);
 	afx_msg LONG OnAutorunVideoDevices(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoFixStart(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam);
+	afx_msg LONG OnRemoveCameraConfig(WPARAM wparam, LPARAM lparam);
 	afx_msg void OnRecSpeedClick();
+	afx_msg void OnCropCamera();
+	afx_msg void OnSpy();
 #else
 	afx_msg void OnXCoordinatesDoubleClick();
 	afx_msg void OnYCoordinatesDoubleClick();

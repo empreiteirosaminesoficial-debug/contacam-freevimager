@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <math.h>
 #include "uImager.h"
 #include "PictureDoc.h"
 #include "VideoDeviceDoc.h"
@@ -12,6 +13,8 @@
 #include "BatchProcDlg.h"
 #include "CPUSpeed.h"
 #include "PostDelayedMessage.h"
+#include "CameraScanDlg.h"
+#include "HostPortDlg.h"
 #include "Dib.h"
 #include "Quantizer.h"
 #include "Tiff2Pdf.h"
@@ -74,7 +77,24 @@ BEGIN_MESSAGE_MAP(CMainFrame, CMDIFrameWnd)
 #ifdef VIDEODEVICEDOC
 	ON_WM_INITMENUPOPUP()
 	ON_MESSAGE(WM_AUTORUN_VIDEODEVICES, OnAutorunVideoDevices)
+	ON_MESSAGE(WM_THREADSAFE_AUTOSCAN_START, OnThreadSafeAutoScanStart)
+	ON_MESSAGE(WM_THREADSAFE_AUTOSCAN_DONE, OnThreadSafeAutoScanDone)
+	ON_MESSAGE(WM_THREADSAFE_AUTOFIX_START, OnThreadSafeAutoFixStart)
+	ON_MESSAGE(WM_THREADSAFE_AUTOFIX_DONE, OnThreadSafeAutoFixDone)
+	ON_MESSAGE(WM_REMOVE_CAMERA_CONFIG, OnRemoveCameraConfig)
 	ON_COMMAND(ID_INDICATOR_REC_SPEED, OnRecSpeedClick)
+	ON_COMMAND(ID_CROP_CAMERA, OnCropCamera)
+	ON_COMMAND(ID_SPY, OnSpy)
+#ifdef VIDEODEVICEDOC
+	ON_COMMAND(ID_DVR_OFF, OnDvrOff)
+	ON_COMMAND(ID_DVR_COLUMN, OnDvrColumn)
+	ON_COMMAND(ID_DVR_L, OnDvrL)
+	ON_COMMAND(ID_DVR_GRID, OnDvrGrid)
+	ON_UPDATE_COMMAND_UI(ID_DVR_OFF, OnUpdateDvrOff)
+	ON_UPDATE_COMMAND_UI(ID_DVR_COLUMN, OnUpdateDvrColumn)
+	ON_UPDATE_COMMAND_UI(ID_DVR_L, OnUpdateDvrL)
+	ON_UPDATE_COMMAND_UI(ID_DVR_GRID, OnUpdateDvrGrid)
+#endif
 #else
 	ON_COMMAND(ID_INDICATOR_XCOORDINATE, OnXCoordinatesDoubleClick)
 	ON_COMMAND(ID_INDICATOR_YCOORDINATE, OnYCoordinatesDoubleClick)
@@ -105,6 +125,15 @@ static SBACTPANEINFO sba_indicators[] =
 CMainFrame::CMainFrame() : m_TrayIcon(IDR_TRAYICON) // Menu ID
 {
 	m_bFullScreenMode = false;
+#ifdef VIDEODEVICEDOC
+	{
+		int nDvr = ::AfxGetApp()->GetProfileInt(_T("General"), _T("DvrMode"), 0);
+		m_bDvrMode = (nDvr != 0);
+		m_nDvrStyle = (nDvr > 0) ? (nDvr - 1) : 0;
+	}
+	m_hDvrMain = NULL;
+	m_ullDvrLastRotate = 0ULL;
+#endif
 	m_nFileMenuPos = -2;
 	m_nEditMenuPos = -2;
 	m_nCaptureMenuPos = -2;
@@ -955,11 +984,76 @@ BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 			PostMessage(WM_CLOSE, 0, 0);
 	}
 #endif
+
+#ifdef VIDEODEVICEDOC
+	// DVR mode toggle: Ctrl+Shift+D
+	if (pMsg->message == WM_KEYDOWN && pMsg->wParam == 'D'	&&
+		(::GetKeyState(VK_CONTROL) & 0x8000)				&&
+		(::GetKeyState(VK_SHIFT) & 0x8000)					&&
+		!(pMsg->lParam & (1 << 30)))						// ignore auto-repeat
+	{
+		DvrToggle();
+		return TRUE;
+	}
+
+	// Crop camera selection: Ctrl+Shift+C
+	if (pMsg->message == WM_KEYDOWN && pMsg->wParam == 'C'	&&
+		(::GetKeyState(VK_CONTROL) & 0x8000)				&&
+		(::GetKeyState(VK_SHIFT) & 0x8000)					&&
+		!(pMsg->lParam & (1 << 30)))						// ignore auto-repeat
+	{
+		OnCropCamera();
+		return TRUE;
+	}
+#endif
 	
 	return CMDIFrameWnd::PreTranslateMessage(pMsg);
 }
 
 #ifdef VIDEODEVICEDOC
+
+LONG CMainFrame::OnThreadSafeAutoScanStart(WPARAM wparam, LPARAM lparam)
+{
+	// A new network camera is connected: look for other cameras in the background
+	CAutoScanCtx* pCtx = (CAutoScanCtx*)lparam;
+	if (pCtx)
+	{
+		if (::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoScanOtherCameras"), 1))
+		{
+			pCtx->m_hNotify = GetSafeHwnd();
+			StartAutoScan(pCtx); // the ownership passes to the scan thread
+		}
+		else
+			delete pCtx;
+	}
+	return 0;
+}
+
+LONG CMainFrame::OnThreadSafeAutoScanDone(WPARAM wparam, LPARAM lparam)
+{
+	CAutoScanCtx* pCtx = (CAutoScanCtx*)lparam;
+	if (pCtx)
+	{
+		if (pCtx->m_Found.GetSize() > 0)
+		{
+			// A modal dialog is open (for example the Camera Basic Settings): try again in 2 seconds
+			if (!IsWindowEnabled() &&
+				CPostDelayedMessageThread::PostDelayedMessage(GetSafeHwnd(), WM_THREADSAFE_AUTOSCAN_DONE, 2000, 0, lparam))
+				return 0;
+
+			CCameraScanDlg Dlg(this);
+			Dlg.m_sUser = pCtx->m_sUser;
+			Dlg.m_sPass = pCtx->m_sPass;
+			Dlg.m_sDvrHost = pCtx->m_sHost;
+			Dlg.m_nDvrPort = (pCtx->m_nPort > 0) ? pCtx->m_nPort : RTSP_DEFAULT_PORT;
+			Dlg.m_sExcludeHost = pCtx->m_sHost;
+			Dlg.m_Found.Append(pCtx->m_Found);
+			Dlg.DoModal();
+		}
+		delete pCtx;
+	}
+	return 0;
+}
 
 LONG CMainFrame::OnAutorunVideoDevices(WPARAM wparam, LPARAM lparam)
 {
@@ -2049,6 +2143,456 @@ void CMainFrame::UpdateDetectionMaxMaxFrames()
 	if (((CUImagerApp*)::AfxGetApp())->m_nDetectionMaxMaxFrames != nDetectionMaxMaxFrames)
 		((CUImagerApp*)::AfxGetApp())->m_nDetectionMaxMaxFrames = nDetectionMaxMaxFrames;
 }
+
+// DVR mode settings
+#define DVR_THUMBS_WIDTH_PERCENT	25		// width of the small cameras column, in % of the MDI client width
+#define DVR_ROTATE_MS				0		// > 0: automatically switch the big camera every DVR_ROTATE_MS milliseconds
+
+void CMainFrame::DvrToggle()
+{
+	// Ctrl+Shift+D cycles: off -> big camera + right column -> "L" layout -> equal grid -> off
+	if (!m_bDvrMode)
+	{
+		m_bDvrMode = TRUE;
+		m_nDvrStyle = 0;
+	}
+	else if (m_nDvrStyle < 2)
+		m_nDvrStyle++;
+	else
+		m_bDvrMode = FALSE;
+	::AfxGetApp()->WriteProfileInt(_T("General"), _T("DvrMode"), !m_bDvrMode ? 0 : (m_nDvrStyle + 1));
+	if (m_bDvrMode)
+	{
+		m_hDvrMain = NULL;
+		m_ullDvrLastRotate = ::GetTickCount64();
+		DvrLayout();
+	}
+}
+
+// From the "Modo DVR" submenu: ID_DVR_OFF/ID_DVR_COLUMN/ID_DVR_L/ID_DVR_GRID
+void CMainFrame::OnDvrOff() { DvrSetStyle(-1); }
+void CMainFrame::OnDvrColumn() { DvrSetStyle(0); }
+void CMainFrame::OnDvrL() { DvrSetStyle(1); }
+void CMainFrame::OnDvrGrid() { DvrSetStyle(2); }
+void CMainFrame::OnUpdateDvrOff(CCmdUI* pCmdUI) { pCmdUI->SetCheck(!m_bDvrMode); }
+void CMainFrame::OnUpdateDvrColumn(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 0); }
+void CMainFrame::OnUpdateDvrL(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 1); }
+void CMainFrame::OnUpdateDvrGrid(CCmdUI* pCmdUI) { pCmdUI->SetCheck(m_bDvrMode && m_nDvrStyle == 2); }
+
+void CMainFrame::DvrSetStyle(int nStyle)
+{
+	if (nStyle < 0)
+		m_bDvrMode = FALSE;
+	else if (m_bDvrMode && m_nDvrStyle == nStyle)
+		m_bDvrMode = FALSE;	// clicking the active style again turns DVR mode off
+	else
+	{
+		m_bDvrMode = TRUE;
+		m_nDvrStyle = nStyle;
+	}
+	::AfxGetApp()->WriteProfileInt(_T("General"), _T("DvrMode"), !m_bDvrMode ? 0 : (m_nDvrStyle + 1));
+	if (m_bDvrMode)
+	{
+		m_hDvrMain = NULL;
+		m_ullDvrLastRotate = ::GetTickCount64();
+	}
+	DvrLayout();
+	if (!m_bDvrMode && m_hWndMDIClient)
+		::SendMessage(m_hWndMDIClient, WM_MDICASCADE, 0, 0);
+}
+
+void CMainFrame::DvrLayout()
+{
+	if (!m_bDvrMode || m_bFullScreenMode || !m_hWndMDIClient)
+		return;
+
+	// Collect the camera frames in document order (stable order for the small cameras)
+	CArray<CToolBarChildFrame*, CToolBarChildFrame*> Frames;
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	POSITION pos = pTemplate->GetFirstDocPosition();
+	while (pos)
+	{
+		CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pTemplate->GetNextDoc(pos);
+		if (pDoc && !pDoc->m_bClosing)
+		{
+			CToolBarChildFrame* pFrame = (CToolBarChildFrame*)pDoc->GetFrame();
+			if (pFrame && ::IsWindow(pFrame->GetSafeHwnd()))
+				Frames.Add(pFrame);
+		}
+	}
+	int n = (int)Frames.GetSize();
+	if (n == 0)
+		return;
+
+	// Which one is the big camera? A click on a small camera activates it and makes it the big one
+	int i;
+	int nMain = -1;
+	int nActive = -1;
+	CMDIChildWnd* pActive = MDIGetActive();
+	for (i = 0 ; i < n ; i++)
+	{
+		if (Frames[i]->GetSafeHwnd() == m_hDvrMain)
+			nMain = i;
+		if (pActive && Frames[i]->GetSafeHwnd() == pActive->GetSafeHwnd())
+			nActive = i;
+	}
+#if (DVR_ROTATE_MS > 0)
+	// Automatic sequence
+	ULONGLONG ullNow = ::GetTickCount64();
+	if (nMain >= 0 && n > 1 && (ullNow - m_ullDvrLastRotate) >= (ULONGLONG)DVR_ROTATE_MS)
+	{
+		nMain = (nMain + 1) % n;
+		m_ullDvrLastRotate = ullNow;
+		Frames[nMain]->MDIActivate();
+		nActive = nMain;
+	}
+#endif
+	if (nActive >= 0)
+		nMain = nActive;
+	else if (nMain < 0)
+		nMain = 0;
+	m_hDvrMain = Frames[nMain]->GetSafeHwnd();
+
+	// Layout: big camera on the left, the others stacked on the right
+	CRect rcMDI;
+	GetMDIClientRect(&rcMDI);
+	if (rcMDI.Width() <= 0 || rcMDI.Height() <= 0)
+		return;
+	int nThumbsW = (n > 1) ? (rcMDI.Width() * DVR_THUMBS_WIDTH_PERCENT / 100) : 0;
+	int nThumbs = n - 1;
+	int k = 0;
+
+	// "L" layout: the biggest square size s for which all the small cameras fit in the
+	// right column (full height) + bottom row
+	int nS = 0, nCr = 0, nCb = 0;
+	if (m_nDvrStyle == 1 && n > 1)
+	{
+		int W = rcMDI.Width(), H = rcMDI.Height();
+		for (nS = min(W, H) / 2 ; nS >= 24 ; nS -= 4)
+		{
+			nCr = H / nS;
+			nCb = (W - nS) / nS;
+			if (nCr + nCb >= nThumbs)
+				break;
+		}
+		if (nS < 24)
+		{
+			nS = 24;
+			nCr = max(1, H / nS);
+			nCb = max(1, (W - nS) / nS);
+		}
+	}
+
+	// Equal grid (like the Intelbras/NVR viewers): same-size squares for every camera, the
+	// fewest columns/rows that fit them all, with the last row centered when it is not full
+	int nGridCols = 0, nGridRows = 0;
+	if (m_nDvrStyle == 2 && n > 0)
+	{
+		nGridCols = (int)ceil(sqrt((double)n));
+		nGridRows = (nGridCols > 0) ? (n + nGridCols - 1) / nGridCols : 1;
+		while (nGridCols > 1 && (nGridCols - 1) * nGridRows >= n)
+			nGridCols--;	// drop empty columns the square root rounding may have added
+	}
+
+	for (i = 0 ; i < n ; i++)
+	{
+		CRect rcNew;
+		if (m_nDvrStyle == 2 && n > 0)
+		{
+			int W = rcMDI.Width(), H = rcMDI.Height();
+			int nRow = i / nGridCols;
+			int nCol = i % nGridCols;
+			int nInThisRow = min(nGridCols, n - nRow * nGridCols);
+			int nRowW = W * nInThisRow / nGridCols;	// last row keeps the same cell size, just shorter
+			int nOffsetX = (W - nRowW) / 2;
+			rcNew = CRect(	nOffsetX + nCol * W / nGridCols,
+							nRow * H / nGridRows,
+							nOffsetX + (nCol + 1) * W / nGridCols,
+							(nRow + 1) * H / nGridRows);
+		}
+		else if (m_nDvrStyle == 1 && n > 1)
+		{
+			int W = rcMDI.Width(), H = rcMDI.Height();
+			int nRight = min(nThumbs, nCr);
+			int nBottom = nThumbs - nRight;
+			if (i == nMain)
+				rcNew = CRect(0, 0, W - nS, nBottom > 0 ? H - nS : H);
+			else if (k < nRight)
+			{
+				rcNew = CRect(W - nS, k * nS, W, (k + 1) * nS);
+				k++;
+			}
+			else
+			{
+				int nB = k - nRight;
+				rcNew = CRect(nB * nS, H - nS, (nB + 1) * nS, H);
+				k++;
+			}
+		}
+		else if (i == nMain)
+			rcNew = CRect(0, 0, rcMDI.Width() - nThumbsW, rcMDI.Height());
+		else
+		{
+			rcNew = CRect(	rcMDI.Width() - nThumbsW,
+							k * rcMDI.Height() / nThumbs,
+							rcMDI.Width(),
+							(k + 1) * rcMDI.Height() / nThumbs);
+			k++;
+		}
+		CToolBarChildFrame* pFrame = Frames[i];
+		if (pFrame->IsZoomed() || pFrame->IsIconic())
+			pFrame->ShowWindow(SW_RESTORE);
+		CRect rcOld;
+		pFrame->GetWindowRect(&rcOld);
+		::MapWindowPoints(NULL, m_hWndMDIClient, (LPPOINT)&rcOld, 2); // MDI client coordinates
+		if (rcOld != rcNew)
+		{
+			pFrame->SetWindowPos(	NULL, rcNew.left, rcNew.top, rcNew.Width(), rcNew.Height(),
+									SWP_NOZORDER | SWP_NOACTIVATE);
+		}
+	}
+}
+
+// Camera already open with the given device path name (NULL if none)
+static CVideoDeviceDoc* FindVideoDeviceDoc(const CString& sDevicePathName)
+{
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	POSITION pos = pTemplate->GetFirstDocPosition();
+	while (pos)
+	{
+		CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)(pTemplate->GetNextDoc(pos));
+		if (pDoc && !pDoc->m_bClosing && pDoc->GetDevicePathName() == sDevicePathName)
+			return pDoc;
+	}
+	return NULL;
+}
+
+// Trash icon of the camera window and automatic fix: the camera is closed first, its configuration
+// is removed after the window has really been closed (closing a camera saves its settings)
+void CMainFrame::RemoveCamera(const CString& sDevicePathName, CWnd* pFrame)
+{
+	if (pFrame)
+		pFrame->PostMessage(WM_CLOSE, 0, 0);
+	CString* pPath = new CString(sDevicePathName);
+	if (!CPostDelayedMessageThread::PostDelayedMessage(GetSafeHwnd(), WM_REMOVE_CAMERA_CONFIG, 1000U, 0, (LPARAM)pPath))
+		delete pPath;
+}
+
+LONG CMainFrame::OnRemoveCameraConfig(WPARAM wparam, LPARAM lparam)
+{
+	CString* pPath = (CString*)lparam;
+	if (!pPath)
+		return 0;
+
+	// Still open? Wait (max 30 seconds)
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	BOOL bOpen = FALSE;
+	POSITION pos = pTemplate->GetFirstDocPosition();
+	while (pos && !bOpen)
+	{
+		CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)(pTemplate->GetNextDoc(pos));
+		if (pDoc && pDoc->GetDevicePathName() == *pPath)
+			bOpen = TRUE;
+	}
+	if (bOpen && wparam < 30)
+	{
+		if (CPostDelayedMessageThread::PostDelayedMessage(GetSafeHwnd(), WM_REMOVE_CAMERA_CONFIG, 1000U, wparam + 1, lparam))
+			return 0; // the string is passed on
+	}
+	else if (!bOpen)
+	{
+		CVideoDeviceDoc::AutorunRemoveDevice(*pPath);
+		if (::AfxGetApp()->m_pszRegistryKey)
+			::DeleteRegistryKey(HKEY_CURRENT_USER,	_T("Software\\") +
+													CString(MYCOMPANY) + CString(_T("\\")) +
+													CString(APPNAME_NOEXT) + _T("\\") +
+													*pPath);
+		else
+			::WritePrivateProfileString(*pPath, NULL, NULL, ::AfxGetApp()->m_pszProfileName);
+	}
+	delete pPath;
+	return 0;
+}
+
+// A network camera has not connected for 2 minutes: the Spy looks for the right port and stream path
+LONG CMainFrame::OnThreadSafeAutoFixStart(WPARAM wparam, LPARAM lparam)
+{
+	CAutoFixCtx* pCtx = (CAutoFixCtx*)lparam;
+	if (pCtx)
+	{
+		// wparam != 0: the person clicked the camera's Spy button, always runs. wparam == 0: the
+		// 2-minutes automatic trigger, only runs when that setting is on
+		if (wparam != 0 || ::AfxGetApp()->GetProfileInt(_T("HostPortDlg"), _T("AutoSpyUnconnected"), 1))
+		{
+			pCtx->m_hNotify = GetSafeHwnd();
+			StartAutoFix(pCtx); // the ownership passes to the scan thread
+		}
+		else
+			delete pCtx;
+	}
+	return 0;
+}
+
+LONG CMainFrame::OnThreadSafeAutoFixDone(WPARAM wparam, LPARAM lparam)
+{
+	CAutoFixCtx* pCtx = (CAutoFixCtx*)lparam;
+	if (!pCtx)
+		return 0;
+	CVideoDeviceDoc* pOld = FindVideoDeviceDoc(pCtx->m_sDevicePathName);
+	if (pOld && pCtx->m_bFound)
+	{
+		const CFoundCamera& cam = pCtx->m_Result;
+		BOOL bSame = (cam.m_nPort == pCtx->m_nOldPort && (cam.m_nMode < 0 || cam.m_nMode == pCtx->m_nOldMode));
+		// Only force TCP for the cameras already known to need it (Yoosee/Gwell); everything else
+		// keeps the normal UDP-first default, several cameras answer 400 Bad Request to a TCP-only
+		// SETUP
+		BOOL bYoosee = (cam.m_sInfo.Find(_T("Yoosee")) >= 0 || cam.m_sInfo.Find(_T("Gwell")) >= 0);
+		int nTransport = bYoosee ? 1 : -1;
+		if (!bSame && pCtx->m_bSilentApply)
+		{
+			// The person clicked the Spy button on purpose: apply right away, no question asked
+			if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport))
+				RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
+		}
+		else if (!bSame)
+		{
+			CString sMsg;
+			sMsg.Format(_T("A c\u00e2mera \"%s\" n\u00e3o conectou em 2 minutos.\n\nO Spy encontrou uma configura\u00e7\u00e3o que responde:\n%s\n\nAplicar? A c\u00e2mera antiga ser\u00e1 fechada e removida (as grava\u00e7\u00f5es n\u00e3o s\u00e3o apagadas) e a nova ser\u00e1 aberta."),
+						pOld->GetAssignedDeviceName(), cam.m_sUrl);
+			if (::AfxMessageBox(sMsg, MB_YESNO | MB_ICONQUESTION) == IDYES)
+			{
+				pOld = FindVideoDeviceDoc(pCtx->m_sDevicePathName); // may have been closed meanwhile
+				if (CHostPortDlg::OpenNetworkCamera(cam.m_sHost, cam.m_nPort, cam.m_sUrl, pCtx->m_sUser, pCtx->m_sPass, -1, nTransport) && pOld)
+					RemoveCamera(pCtx->m_sDevicePathName, pOld->GetFrame());
+			}
+		}
+		else if (pCtx->m_bSilentApply)
+		{
+			// Same config already active: let the person know nothing needed to change
+			::AfxMessageBox(_T("O Spy n\u00e3o encontrou uma configura\u00e7\u00e3o diferente da atual para essa c\u00e2mera."), MB_OK | MB_ICONINFORMATION);
+		}
+	}
+	else if (!pCtx->m_bFound && pCtx->m_bSilentApply && pOld)
+	{
+		::AfxMessageBox(_T("O Spy n\u00e3o encontrou nenhuma configura\u00e7\u00e3o que respondesse para essa c\u00e2mera."), MB_OK | MB_ICONINFORMATION);
+	}
+	delete pCtx;
+	return 0;
+}
+
+// Spy: sweep an IP range looking for cameras
+void CMainFrame::OnSpy()
+{
+	CCameraScanDlg Dlg(this, IDD_SPY);
+	Dlg.DoModal();
+}
+
+// Start / stop the crop selection on the active camera
+void CMainFrame::OnCropCamera()
+{
+	CMDIChildWnd* pChild = MDIGetActive();
+	if (!pChild)
+		return;
+	CView* pView = pChild->GetActiveView();
+	if (pView && pView->IsKindOf(RUNTIME_CLASS(CVideoDeviceView)))
+		((CVideoDeviceView*)pView)->CropSelectToggle();
+}
+
+// Creates a new camera that shows only a region of pSrc (nL, nT, nR, nB in 1/10000 of the source frame)
+BOOL CMainFrame::CreateCropCamera(CVideoDeviceDoc* pSrc, int nL, int nT, int nR, int nB)
+{
+	if (!pSrc || pSrc->m_bClosing || nL < 0 || nT < 0 || nR > 10000 || nB > 10000 || nR <= nL || nB <= nT)
+		return FALSE;
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	CWinApp* pApp = ::AfxGetApp();
+
+	// Unique device path name (never used as settings section before)
+	CString sPath;
+	ULONGLONG ullId = (ULONGLONG)CTime::GetCurrentTime().GetTime() * 1000ULL + (::GetTickCount64() % 1000ULL);
+	for (;;)
+	{
+		CString sLocation;
+		sLocation.Format(_T("/c%08X"), (unsigned int)(ullId & 0xFFFFFFFFULL));
+		sPath = CVideoDeviceDoc::MakeNetworkDevicePathName(_T("crop"), 1, sLocation, CVideoDeviceDoc::CROP_CAMERA);
+		if (pApp->GetProfileString(sPath, _T("CropSource"), _T("")).IsEmpty())
+			break;
+		ullId++;
+	}
+
+	// Unique friendly name: "<source name> crop <n>"
+	CString sBaseName(pSrc->GetAssignedDeviceName());
+	CString sName;
+	for (int n = 1 ; ; n++)
+	{
+		sName.Format(_T("%s crop %d"), sBaseName, n);
+		BOOL bUsed = FALSE;
+		POSITION pos = pTemplate->GetFirstDocPosition();
+		while (pos)
+		{
+			CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pTemplate->GetNextDoc(pos);
+			if (pDoc && pDoc->GetAssignedDeviceName() == sName)
+			{
+				bUsed = TRUE;
+				break;
+			}
+		}
+		if (!bUsed)
+			break;
+	}
+
+	// Save the crop settings, OpenCropDevice() reads them
+	pApp->WriteProfileString(sPath, _T("CropSource"), pSrc->GetDevicePathName());
+	pApp->WriteProfileString(sPath, _T("CropName"), sName);
+	pApp->WriteProfileInt(sPath, _T("CropL"), nL);
+	pApp->WriteProfileInt(sPath, _T("CropT"), nT);
+	pApp->WriteProfileInt(sPath, _T("CropR"), nR);
+	pApp->WriteProfileInt(sPath, _T("CropB"), nB);
+
+	// Open the new camera
+	CVideoDeviceDoc* pDoc = (CVideoDeviceDoc*)pTemplate->OpenDocumentFile(NULL);
+	if (!pDoc)
+		return FALSE;
+	if (!pDoc->OpenNetVideoDevice(sPath))
+	{
+		if (pDoc->GetFrame())
+			((CToolBarChildFrame*)pDoc->GetFrame())->PostMessage(WM_CLOSE, 0, 0);
+		return FALSE;
+	}
+
+	// Start receiving frames
+	g_CropManager.Link(pSrc, pDoc, nL, nT, nR, nB);
+	return TRUE;
+}
+
+void CMainFrame::CropResolveLinks()
+{
+	CUImagerMultiDocTemplate* pTemplate = ((CUImagerApp*)::AfxGetApp())->GetVideoDeviceDocTemplate();
+	if (!pTemplate)
+		return;
+	POSITION pos = pTemplate->GetFirstDocPosition();
+	while (pos)
+	{
+		CVideoDeviceDoc* pDst = (CVideoDeviceDoc*)pTemplate->GetNextDoc(pos);
+		if (!pDst									||
+			pDst->m_bClosing						||
+			pDst->m_nNetworkDeviceTypeMode != CVideoDeviceDoc::CROP_CAMERA	||
+			pDst->m_sCropSource.IsEmpty()			||
+			g_CropManager.IsLinked(pDst))
+			continue;
+
+		// Look for the source camera
+		POSITION pos2 = pTemplate->GetFirstDocPosition();
+		while (pos2)
+		{
+			CVideoDeviceDoc* pSrc = (CVideoDeviceDoc*)pTemplate->GetNextDoc(pos2);
+			if (pSrc && pSrc != pDst && !pSrc->m_bClosing && pSrc->GetDevicePathName() == pDst->m_sCropSource)
+			{
+				g_CropManager.Link(pSrc, pDst, pDst->m_nCropL, pDst->m_nCropT, pDst->m_nCropR, pDst->m_nCropB);
+				break;
+			}
+		}
+	}
+}
 #endif
 
 CString CMainFrame::GetDiskStats(LPCTSTR lpszPath)
@@ -2240,6 +2784,15 @@ void CMainFrame::OnTimer(UINT nIDEvent)
 	}
 	else if (nIDEvent == ID_TIMER_1SEC)
 	{
+#ifdef VIDEODEVICEDOC
+		// DVR mode layout (follows window resizes, new / closed cameras and clicks on the small cameras)
+		if (m_bDvrMode)
+			DvrLayout();
+
+		// Link the crop cameras to their source camera (also after a restart or when the source is reopened)
+		CropResolveLinks();
+#endif
+
 		// If the No Donation flag changes trigger the drawing
 		static BOOL bNoDonation = FALSE;
 		if (g_DonorEmailValidateThread.m_bNoDonation != bNoDonation)
